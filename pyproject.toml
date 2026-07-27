@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools==75.8.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icapa"
+version = "0.1.0"
+description = "Provider-neutral index construction, simulation, analytics, and reporting"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "ICAPA contributors" }]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy==1.26.4",
+    "openpyxl==3.1.5",
+    "pandas==2.2.3",
+    "scipy==1.13.1",
+    "xlrd==2.0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.4"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+testpaths = ["tests"]
+
+[tool.setuptools]
+include-package-data = false
+packages = [
+    "icapa",
+    "icapa.analytics",
+    "icapa.backtesting",
+    "icapa.backtesting.backtester",
+    "icapa.backtesting.calendar",
+    "icapa.backtesting.simulation_params",
+    "icapa.backtesting.simulator",
+    "icapa.data_sources",
+    "icapa.data_sources.factset",
+    "icapa.data_sources.snowflake",
+    "icapa.helpers",
+    "icapa.portfolio_construction",
+    "icapa.portfolio_construction.optimization",
+    "icapa.portfolio_construction.rules",
+    "icapa.portfolio_construction.rules.data_loading",
+    "icapa.reporting",
+    "icapa.tools",
+    "icapa.tools.container",
+    "icapa.tools.enums",
+    "icapa.workspace",
+]
+
+[tool.setuptools.package-dir]
+icapa = "."
+
+[tool.setuptools.package-data]
+icapa = [
+    "assets/icapa.png",
+    "reporting/templates/index_research_report.xlsx",
+]

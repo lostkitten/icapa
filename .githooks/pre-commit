@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+python_command=${ICAPA_PYTHON:-python3}
+
+"$python_command" scripts/repository_guard.py --index
+git diff --cached --check

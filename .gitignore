@@ -1,0 +1,87 @@
+# Operating-system and editor artifacts
+.DS_Store
+._*
+Thumbs.db
+*~
+*.swp
+.idea/
+.vscode/
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments and package builds
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials*.json
+secrets*.json
+
+# Runtime workspaces, logs, databases, and local datasets
+.icapa/
+workspaces/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.feather
+*.pickle
+*.pkl
+*.csv
+*.tsv
+*.xls
+*.xlsx
+!reporting/templates/index_research_report.xlsx
+
+# Public data-source surface
+#
+# Keep provider-neutral contracts and utilities public, and expose only the
+# FactSet and Snowflake adapter examples. Other local adapters stay available
+# in a development checkout but cannot be added accidentally.
+/data_sources/*
+!/data_sources/__init__.py
+!/data_sources/contracts.py
+!/data_sources/exceptions.py
+!/data_sources/file_provider.py
+!/data_sources/interfaces.py
+!/data_sources/registry.py
+!/data_sources/sql_server.py
+!/data_sources/factset/
+!/data_sources/factset/__init__.py
+!/data_sources/factset/factset.py
+!/data_sources/snowflake/
+!/data_sources/snowflake/__init__.py
+!/data_sources/snowflake/snowflake.py
+
+# Local-only portfolio-construction implementations
+/portfolio_construction/methodologies/*
+!/portfolio_construction/methodologies/.gitkeep
+/portfolio_construction/rules/engines/*
+!/portfolio_construction/rules/engines/.gitkeep
+/portfolio_construction/rules/data_processing/*
+!/portfolio_construction/rules/data_processing/.gitkeep
+/portfolio_construction/calculation_variant.py
+/demo.py
+/tests/smoke/test_methodology_demos.py
+/tests/smoke/test_end_to_end_research_demo.py
