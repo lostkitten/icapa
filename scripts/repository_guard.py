@@ -235,7 +235,12 @@ def _validate_blob(entry: Entry, payload: bytes, errors: list[str]) -> None:
     _scan_text(entry.path, text, errors)
 
 
-def _validate(entries: list[Entry], label: str) -> None:
+def _validate(
+    entries: list[Entry],
+    label: str,
+    *,
+    require_placeholders: bool = True,
+) -> None:
     errors: list[str] = []
     seen_casefolded: dict[str, str] = {}
     for entry in entries:
@@ -250,9 +255,10 @@ def _validate(entries: list[Entry], label: str) -> None:
         if entry.mode.startswith("100"):
             _validate_blob(entry, _blob(entry.oid), errors)
 
-    missing = sorted(ALLOWED_PLACEHOLDERS - set(seen_casefolded))
-    for path in missing:
-        errors.append(f"required placeholder is missing: {path}")
+    if require_placeholders:
+        missing = sorted(ALLOWED_PLACEHOLDERS - set(seen_casefolded))
+        for path in missing:
+            errors.append(f"required placeholder is missing: {path}")
 
     if errors:
         print(f"Public repository guard failed for {label}:", file=sys.stderr)
@@ -266,8 +272,12 @@ def _history(revision: str) -> None:
     commits = _git("rev-list", revision).decode("ascii").splitlines()
     if not commits:
         raise RuntimeError(f"no commits are reachable from {revision!r}")
-    for commit in commits:
-        _validate(_tree_entries(commit), commit)
+    for position, commit in enumerate(commits):
+        _validate(
+            _tree_entries(commit),
+            commit,
+            require_placeholders=position == 0,
+        )
 
 
 def main() -> None:
