@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+python_command=${ICAPA_PYTHON:-python3}
+zero=0000000000000000000000000000000000000000
+checked=
+
+while read -r local_ref local_oid remote_ref remote_oid
+do
+    if [ "$local_oid" = "$zero" ]
+    then
+        continue
+    fi
+    "$python_command" scripts/repository_guard.py --history "$local_oid"
+    checked=yes
+done
+
+if [ -z "$checked" ]
+then
+    "$python_command" scripts/repository_guard.py --history HEAD
+fi
