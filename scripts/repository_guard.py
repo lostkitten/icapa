@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -23,13 +25,13 @@ PLACEHOLDER_DIRECTORIES = (
 ALLOWED_PLACEHOLDERS = {
     f"{directory}/.gitkeep".casefold() for directory in PLACEHOLDER_DIRECTORIES
 }
-LOCAL_ONLY_FILES = {
+PRIVATE_IMPLEMENTATION_FILES = {
     "portfolio_construction/calculation_variant.py",
     "demo.py",
     "tests/smoke/test_methodology_demos.py",
     "tests/smoke/test_end_to_end_research_demo.py",
 }
-PUBLIC_DATA_SOURCE_FILES = {
+PUBLIC_PROVIDER_SURFACE_FILES = {
     "data_sources/__init__.py",
     "data_sources/contracts.py",
     "data_sources/exceptions.py",
@@ -42,11 +44,11 @@ PUBLIC_DATA_SOURCE_FILES = {
     "data_sources/snowflake/__init__.py",
     "data_sources/snowflake/snowflake.py",
 }
-ALLOWED_BINARY_FILES = {
+PUBLIC_BINARY_ALLOWLIST = {
     "assets/icapa.png",
     "reporting/templates/index_research_report.xlsx",
 }
-BLOCKED_SUFFIXES = {
+BLOCKED_DATA_OR_SECRET_SUFFIXES = {
     ".csv",
     ".db",
     ".feather",
@@ -61,14 +63,16 @@ BLOCKED_SUFFIXES = {
     ".xls",
     ".xlsx",
 }
-GENERATED_PARTS = {
+GENERATED_PATH_PARTS = {
     ".ds_store",
     ".pytest_cache",
     "__pycache__",
     "build",
     "dist",
 }
-PROHIBITED_SUBSTRING_HASHES = {
+# Restricted names are stored only as one-way digests so the guard can reject
+# them without embedding those names in distributed source.
+RESTRICTED_IDENTIFIER_DIGESTS_BY_LENGTH = {
     4: {
         "fd1fa5baa00345fc6bc833e7ef18d4da3b4bf3a7dcf1863e6500e6300382c61f",
         "9b66ebf8bce2099dfa88d9bf25b4d5b18ec542fdb51756b5937b262e265adc97",
@@ -81,9 +85,23 @@ PROHIBITED_SUBSTRING_HASHES = {
     7: {
         "ec87d0e0735ce8d20ddf792630a066ab99a7e3370281adc2eba9c3192033ff7f",
     },
+    12: {
+        "e9e1cd0176b527fe3f4076faa20ee78073a9b23794aa684afd01fdf85f7b1c19",
+    },
+    14: {
+        "5335b61b76ed3fcc2d3f817eec703bb60cb07f347b330167dcf1bded2cc96bda",
+        "d92573f254c9626eb020241fa9b261fe9c74fedb144040d80e664886141fb344",
+        "3e7e5605cad15e97f071ccf03a16805ba470b3efcbd296eb37924dc688c54e0d",
+        "0f509b638c4ea786ebb591204d2aa18b72be96242189cf99d001ba05b9ae922e",
+    },
     15: {
         "9899ffe89013fae6f7c74c6f248e24a4bf383dfd34d13583a9dccaf48f333b6c",
         "f361c7c2f1d1214ba59b3da0b4c8947823da9f11dd607a40231d3bf267d7e1c6",
+    },
+    16: {
+        "f6868f49ee8b69235b244b30d4aaf545bb84d81a1f59b8d882cdb8575fdd4a10",
+        "e03ad6ae4a8bbad193ebed7ad0c7c916c52e0434cecee9617e2cfcda58aa097f",
+        "85ad777dc14b5111fe945cf9c4c215fd1dd19a60249932d390984f5779af7748",
     },
     20: {
         "7a8144cc4f4e8ae319aaadfc065c29a0106e8e8bc0b232a820d10c2c5246c745",
@@ -173,8 +191,39 @@ def _tree_entries(revision: str) -> list[Entry]:
     return entries
 
 
+def _worktree_entries() -> list[Entry]:
+    output = _git(
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    )
+    entries: list[Entry] = []
+    for raw_path in output.split(b"\0"):
+        if not raw_path:
+            continue
+        path = raw_path.decode("utf-8")
+        if not os.path.lexists(path):
+            continue
+        candidate = Path(path)
+        if candidate.is_symlink():
+            mode = "120000"
+        else:
+            mode = "100755" if os.access(candidate, os.X_OK) else "100644"
+        entries.append(Entry(mode, path, path))
+    return entries
+
+
 def _blob(oid: str) -> bytes:
     return _git("cat-file", "blob", oid)
+
+
+def _worktree_blob(path: str) -> bytes:
+    candidate = Path(path)
+    if candidate.is_symlink():
+        return os.readlink(candidate).encode("utf-8")
+    return candidate.read_bytes()
 
 
 def _validate_path(
@@ -186,9 +235,12 @@ def _validate_path(
     path = PurePosixPath(entry.path)
     folded = entry.path.casefold()
     parts = {part.casefold() for part in path.parts}
+    _scan_text(f"path {entry.path}", entry.path, errors)
 
     if enforce_public_data_sources and folded.startswith("data_sources/"):
-        allowed_files = {item.casefold() for item in PUBLIC_DATA_SOURCE_FILES}
+        allowed_files = {
+            item.casefold() for item in PUBLIC_PROVIDER_SURFACE_FILES
+        }
         if folded not in allowed_files:
             errors.append(f"non-public data-source path is tracked: {entry.path}")
 
@@ -197,16 +249,19 @@ def _validate_path(
         if folded.startswith(prefix) and folded not in ALLOWED_PLACEHOLDERS:
             errors.append(f"protected implementation path is tracked: {entry.path}")
 
-    if folded in {item.casefold() for item in LOCAL_ONLY_FILES}:
+    if folded in {item.casefold() for item in PRIVATE_IMPLEMENTATION_FILES}:
         errors.append(f"local-only implementation file is tracked: {entry.path}")
     if (
         folded.startswith("portfolio_construction/")
         and path.name.casefold().endswith(("_methodology.py", "_engine.py"))
     ):
         errors.append(f"implementation-shaped source file is tracked: {entry.path}")
-    if parts & GENERATED_PARTS:
+    if parts & GENERATED_PATH_PARTS:
         errors.append(f"generated artifact is tracked: {entry.path}")
-    if path.suffix.casefold() in BLOCKED_SUFFIXES and entry.path not in ALLOWED_BINARY_FILES:
+    if (
+        path.suffix.casefold() in BLOCKED_DATA_OR_SECRET_SUFFIXES
+        and entry.path not in PUBLIC_BINARY_ALLOWLIST
+    ):
         errors.append(f"unapproved data or binary file is tracked: {entry.path}")
     if entry.mode in {"120000", "160000"}:
         errors.append(f"symlink or submodule is not allowed: {entry.path}")
@@ -216,11 +271,13 @@ def _validate_path(
 
 def _scan_text(label: str, text: str, errors: list[str]) -> None:
     folded = text.casefold()
-    for length, prohibited_hashes in PROHIBITED_SUBSTRING_HASHES.items():
+    for length, restricted_digests in (
+        RESTRICTED_IDENTIFIER_DIGESTS_BY_LENGTH.items()
+    ):
         for start in range(len(folded) - length + 1):
             candidate = folded[start : start + length].encode("utf-8")
-            if hashlib.sha256(candidate).hexdigest() in prohibited_hashes:
-                errors.append(f"prohibited identifier found in {label}")
+            if hashlib.sha256(candidate).hexdigest() in restricted_digests:
+                errors.append(f"restricted identifier found in {label}")
                 break
     if HAN_PATTERN.search(text):
         errors.append(f"Han character found in {label}")
@@ -264,6 +321,7 @@ def _validate(
     *,
     require_placeholders: bool = True,
     enforce_public_data_sources: bool = True,
+    blob_loader=_blob,
 ) -> None:
     errors: list[str] = []
     seen_casefolded: dict[str, str] = {}
@@ -281,7 +339,7 @@ def _validate(
             enforce_public_data_sources=enforce_public_data_sources,
         )
         if entry.mode.startswith("100"):
-            _validate_blob(entry, _blob(entry.oid), errors)
+            _validate_blob(entry, blob_loader(entry.oid), errors)
 
     if require_placeholders:
         missing = sorted(ALLOWED_PLACEHOLDERS - set(seen_casefolded))
@@ -313,6 +371,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--index", action="store_true")
+    group.add_argument("--worktree", action="store_true")
     group.add_argument("--tree", metavar="REVISION")
     group.add_argument("--history", metavar="REVISION")
     arguments = parser.parse_args()
@@ -320,6 +379,12 @@ def main() -> None:
     try:
         if arguments.index:
             _validate(_index_entries(), "Git index")
+        elif arguments.worktree:
+            _validate(
+                _worktree_entries(),
+                "working tree",
+                blob_loader=_worktree_blob,
+            )
         elif arguments.tree:
             _validate(_tree_entries(arguments.tree), arguments.tree)
         else:
