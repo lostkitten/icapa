@@ -14,7 +14,7 @@ from .identity import (
     automatic_digest,
     automatic_runtime_identity,
     canonical_json_bytes,
-    canonicalize,
+    secret_safe_canonicalize,
 )
 from .manifests import (
     ArtifactRef,
@@ -51,19 +51,19 @@ class ManifestOperations:
             raise ValueError("index_id must not be empty")
         selected_cache = cache or CacheOptions.off()
         software = automatic_runtime_identity()
-        safe_calendar = canonicalize(dict(calendar or {}))
+        safe_calendar = secret_safe_canonicalize(dict(calendar or {}))
         safe_providers = tuple(
-            canonicalize(dict(provider)) for provider in providers
+            secret_safe_canonicalize(dict(provider)) for provider in providers
         )
-        safe_request = canonicalize(dict(request))
-        safe_request_identity = canonicalize(
+        safe_request = secret_safe_canonicalize(dict(request))
+        safe_request_identity = secret_safe_canonicalize(
             dict(request if request_identity is None else request_identity)
         )
         definition_fingerprint = automatic_digest(
             {
                 "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
                 "index_id": index_id,
-                "definition": canonicalize(dict(definition)),
+                "definition": secret_safe_canonicalize(dict(definition)),
                 "calendar_semantics": safe_calendar,
                 "software": software,
             }
@@ -112,9 +112,13 @@ class ManifestOperations:
 
         self._validate_manifest_workspace(manifest)
         combined = merge_artifacts(manifest.artifacts, artifacts)
-        combined_inputs = merge_input_digests(
+        merged_inputs = merge_input_digests(
             manifest.input_digests,
             input_digests,
+        )
+        combined_inputs = tuple(
+            secret_safe_canonicalize(dict(item))
+            for item in merged_inputs
         )
         result_fingerprint = automatic_digest(
             {

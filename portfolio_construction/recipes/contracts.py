@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import pandas as pd
+
+from icapa.data_sources.provenance import private_parameter_digest
 
 from .artifacts import (
     Artifact,
@@ -75,6 +77,133 @@ REVIEW_DIMENSIONS = frozenset(
 
 
 @dataclass(frozen=True)
+class _FrozenParameterValue:
+    """Type-tagged value retained inside immutable parameter mappings."""
+
+    kind: str
+    payload: Any
+
+
+class _FrozenParameterMapping(Mapping[str, Any]):
+    """Deeply immutable, hashable provider-request parameter mapping."""
+
+    __slots__ = ("_items", "_lookup")
+
+    def __init__(self, values: Mapping[str, Any] | None = None) -> None:
+        selected = dict(values or {})
+        if any(not isinstance(key, str) for key in selected):
+            raise TypeError("provider parameter mappings require string keys")
+        private_parameter_digest(selected)
+        items = tuple(
+            (key, _freeze_parameter_value(value))
+            for key, value in sorted(selected.items())
+        )
+        self._items = items
+        self._lookup = dict(items)
+
+    def __getitem__(self, key: str) -> Any:
+        return _immutable_parameter_view(self._lookup[key])
+
+    def __iter__(self):
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _FrozenParameterMapping):
+            return self._items == other._items
+        if isinstance(other, Mapping):
+            try:
+                return self._items == _FrozenParameterMapping(other)._items
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    def __repr__(self) -> str:
+        return repr(_thaw_parameter_value(self))
+
+
+def _freeze_parameter_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _FrozenParameterMapping(value)
+    if isinstance(value, list):
+        return _FrozenParameterValue(
+            "list",
+            tuple(_freeze_parameter_value(item) for item in value),
+        )
+    if isinstance(value, tuple):
+        return _FrozenParameterValue(
+            "tuple",
+            tuple(_freeze_parameter_value(item) for item in value),
+        )
+    if isinstance(value, set):
+        return _FrozenParameterValue(
+            "set",
+            frozenset(_freeze_parameter_value(item) for item in value),
+        )
+    if isinstance(value, frozenset):
+        return _FrozenParameterValue(
+            "frozenset",
+            frozenset(_freeze_parameter_value(item) for item in value),
+        )
+    if isinstance(value, bytearray):
+        return _FrozenParameterValue("bytearray", bytes(value))
+    return _FrozenParameterValue(
+        f"{type(value).__module__}.{type(value).__qualname__}",
+        value,
+    )
+
+
+def _thaw_parameter_value(value: Any) -> Any:
+    if isinstance(value, _FrozenParameterMapping):
+        return {
+            key: _thaw_parameter_value(item)
+            for key, item in value._items
+        }
+    if isinstance(value, _FrozenParameterValue):
+        if value.kind == "list":
+            return [_thaw_parameter_value(item) for item in value.payload]
+        if value.kind == "tuple":
+            return tuple(
+                _thaw_parameter_value(item) for item in value.payload
+            )
+        if value.kind == "set":
+            return {
+                _thaw_parameter_value(item) for item in value.payload
+            }
+        if value.kind == "frozenset":
+            return frozenset(
+                _thaw_parameter_value(item) for item in value.payload
+            )
+        if value.kind == "bytearray":
+            return bytearray(value.payload)
+        return value.payload
+    return value
+
+
+def _immutable_parameter_view(value: Any) -> Any:
+    if isinstance(value, _FrozenParameterMapping):
+        return value
+    if isinstance(value, _FrozenParameterValue):
+        if value.kind in {"list", "tuple"}:
+            return tuple(
+                _immutable_parameter_view(item) for item in value.payload
+            )
+        if value.kind in {"set", "frozenset"}:
+            return frozenset(
+                _immutable_parameter_view(item) for item in value.payload
+            )
+        if value.kind == "bytearray":
+            return bytes(value.payload)
+        return value.payload
+    return value
+
+
+@dataclass(frozen=True)
 class ReviewIdentity:
     """Canonical identity of one index review."""
 
@@ -121,13 +250,38 @@ class PriorArtifactRequirement:
 
 @dataclass(frozen=True)
 class ProviderRequestSpec:
-    """Describe the immutable request made to one recipe provider."""
+    """Describe one immutable provider snapshot request.
+
+    ``request_parameters`` contains fixed, non-secret request arguments.
+    Provider binding parameters are merged either at the request top level or
+    beneath ``provider_parameters_key``.  The optional expected provider name
+    and parameter digest prevent a recipe from fingerprinting one provider
+    binding while its implementation reads from another. A request marked
+    ``covers_all_instruments`` uses a provider-acknowledged dataset snapshot;
+    cache preflight requires it to be paired with an exact universe request.
+    """
 
     capability: str
     review_dimensions: frozenset[str] = frozenset()
     include_provider_parameters: bool = True
+    request_parameters: Mapping[str, Any] = field(default_factory=dict)
+    provider_parameters_key: str | None = None
+    review_parameter_map: Mapping[str, str] = field(default_factory=dict)
+    expected_provider_name: str | None = None
+    expected_provider_parameters_digest: str | None = None
+    covers_all_instruments: bool = False
+    expected_provider_parameters: InitVar[Mapping[str, Any] | None] = None
+    _declared_provider_parameters: Mapping[str, Any] | None = field(
+        init=False,
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
-    def __post_init__(self) -> None:
+    def __post_init__(
+        self,
+        expected_provider_parameters: Mapping[str, Any] | None,
+    ) -> None:
         if not isinstance(self.capability, str) or not self.capability.strip():
             raise ValueError("provider request capability must be a non-empty string")
         dimensions = frozenset(self.review_dimensions)
@@ -138,33 +292,206 @@ class ProviderRequestSpec:
             )
         if not isinstance(self.include_provider_parameters, bool):
             raise TypeError("include_provider_parameters must be a bool")
+        request_parameters = _FrozenParameterMapping(
+            self.request_parameters
+        )
+        if any(
+            not isinstance(name, str) or not name.strip()
+            for name in request_parameters
+        ):
+            raise ValueError(
+                "provider request parameter names must be non-empty strings"
+            )
+        provider_parameters_key = self.provider_parameters_key
+        if provider_parameters_key is not None:
+            if (
+                not isinstance(provider_parameters_key, str)
+                or not provider_parameters_key.strip()
+            ):
+                raise ValueError(
+                    "provider_parameters_key must be a non-empty string or None"
+                )
+            if not self.include_provider_parameters:
+                raise ValueError(
+                    "provider_parameters_key requires include_provider_parameters=True"
+                )
+            provider_parameters_key = provider_parameters_key.strip()
+        review_parameter_map = _FrozenParameterMapping(
+            self.review_parameter_map
+        )
+        if any(
+            not isinstance(name, str) or not name.strip()
+            for name in review_parameter_map
+        ):
+            raise ValueError("review parameter names must be non-empty strings")
+        unknown_mapped = set(review_parameter_map.values()) - REVIEW_DIMENSIONS
+        if unknown_mapped:
+            raise ValueError(
+                "unknown mapped provider request review dimensions: "
+                f"{sorted(unknown_mapped)}"
+            )
+        expected_provider_name = self.expected_provider_name
+        if expected_provider_name is not None:
+            if (
+                not isinstance(expected_provider_name, str)
+                or not expected_provider_name.strip()
+            ):
+                raise ValueError(
+                    "expected_provider_name must be a non-empty string or None"
+                )
+            expected_provider_name = expected_provider_name.strip().lower()
+        expected_digest = self.expected_provider_parameters_digest
+        declared_parameters = (
+            None
+            if expected_provider_parameters is None
+            else _FrozenParameterMapping(expected_provider_parameters)
+        )
+        if declared_parameters is not None:
+            declared_digest = private_parameter_digest(
+                _thaw_parameter_value(declared_parameters)
+            )
+            if expected_digest is not None and expected_digest != declared_digest:
+                raise ValueError(
+                    "expected provider parameter mapping does not match its digest"
+                )
+            expected_digest = declared_digest
+        if expected_digest is not None:
+            if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+                raise ValueError(
+                    "expected_provider_parameters_digest must be a SHA-256 hex digest"
+                )
+            try:
+                int(expected_digest, 16)
+            except ValueError as exc:
+                raise ValueError(
+                    "expected_provider_parameters_digest must be a SHA-256 hex digest"
+                ) from exc
+            expected_digest = expected_digest.lower()
+        if not isinstance(self.covers_all_instruments, bool):
+            raise TypeError("covers_all_instruments must be a bool")
+        if self.covers_all_instruments and "instrument_scope" in request_parameters:
+            raise ValueError(
+                "request_parameters must not override dataset instrument scope"
+            )
         object.__setattr__(self, "capability", self.capability.strip())
         object.__setattr__(self, "review_dimensions", dimensions)
+        object.__setattr__(
+            self,
+            "request_parameters",
+            request_parameters,
+        )
+        object.__setattr__(
+            self,
+            "provider_parameters_key",
+            provider_parameters_key,
+        )
+        object.__setattr__(
+            self,
+            "review_parameter_map",
+            review_parameter_map,
+        )
+        object.__setattr__(self, "expected_provider_name", expected_provider_name)
+        object.__setattr__(
+            self,
+            "expected_provider_parameters_digest",
+            expected_digest,
+        )
+        object.__setattr__(
+            self,
+            "_declared_provider_parameters",
+            (
+                None
+                if declared_parameters is None
+                else declared_parameters
+            ),
+        )
+
+    @property
+    def declared_provider_parameters(self) -> Mapping[str, Any] | None:
+        """Return in-memory parameters for manifest/provider alignment."""
+
+        if self._declared_provider_parameters is None:
+            return None
+        return _thaw_parameter_value(self._declared_provider_parameters)
+
+    def validate_binding(
+        self,
+        provider_name: str,
+        provider_parameters: Mapping[str, Any],
+    ) -> None:
+        """Fail when the runtime binding differs from the declared reader."""
+
+        selected_name = str(provider_name).strip().lower()
+        if (
+            self.expected_provider_name is not None
+            and selected_name != self.expected_provider_name
+        ):
+            raise ValueError(
+                f"provider request {self.capability!r} expects provider "
+                f"{self.expected_provider_name!r}, not {selected_name!r}"
+            )
+        self._validate_provider_parameters(provider_parameters)
+
+    def _validate_provider_parameters(
+        self,
+        provider_parameters: Mapping[str, Any],
+    ) -> None:
+        if self.expected_provider_parameters_digest is None:
+            return
+        actual_digest = private_parameter_digest(dict(provider_parameters))
+        if actual_digest != self.expected_provider_parameters_digest:
+            raise ValueError(
+                f"provider request {self.capability!r} binding parameters "
+                "do not match the parameters used by the recipe stage"
+            )
 
     def build_request(
         self,
         review: ReviewIdentity,
         provider_parameters: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Build the exact keyword mapping declared for one provider call."""
+        """Build the fixed and review-bound provider snapshot request."""
 
-        request = (
-            dict(provider_parameters)
-            if self.include_provider_parameters
-            else {}
-        )
-        overlap = set(request).intersection(self.review_dimensions)
+        parameters = dict(provider_parameters)
+        self._validate_provider_parameters(parameters)
+        request = _thaw_parameter_value(self.request_parameters)
+        if self.covers_all_instruments:
+            request["instrument_scope"] = "all_instruments"
+        if self.include_provider_parameters:
+            if self.provider_parameters_key is None:
+                overlap = set(request).intersection(parameters)
+                if overlap:
+                    raise ValueError(
+                        "fixed request parameters must not overlap provider "
+                        f"parameters: {sorted(overlap)}"
+                    )
+                request.update(parameters)
+            else:
+                if self.provider_parameters_key in request:
+                    raise ValueError(
+                        "fixed request parameters must not contain the provider "
+                        f"parameter container {self.provider_parameters_key!r}"
+                    )
+                request[self.provider_parameters_key] = parameters
+        review_values = {
+            name: getattr(review, name)
+            for name in sorted(self.review_dimensions)
+        }
+        for parameter_name, dimension_name in sorted(
+            self.review_parameter_map.items()
+        ):
+            if parameter_name in review_values:
+                raise ValueError(
+                    f"duplicate review-bound provider request parameter: {parameter_name!r}"
+                )
+            review_values[parameter_name] = getattr(review, dimension_name)
+        overlap = set(request).intersection(review_values)
         if overlap:
             raise ValueError(
-                "provider parameters must not override declared review "
-                f"dimensions: {sorted(overlap)}"
+                "provider request parameters must not override review-bound "
+                f"parameters: {sorted(overlap)}"
             )
-        request.update(
-            {
-                name: getattr(review, name)
-                for name in sorted(self.review_dimensions)
-            }
-        )
+        request.update(review_values)
         return request
 
 
@@ -196,10 +523,9 @@ class StageRequirements:
                 "provider_requests must contain ProviderRequestSpec values"
             )
         request_capabilities = [item.capability for item in requests]
-        if len(set(request_capabilities)) != len(request_capabilities):
-            raise ValueError(
-                "provider request capabilities must not contain duplicates"
-            )
+        for position, request in enumerate(requests):
+            if request in requests[:position]:
+                raise ValueError("provider requests must not contain duplicates")
         undeclared = set(request_capabilities) - set(providers)
         if undeclared:
             raise ValueError(

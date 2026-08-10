@@ -29,7 +29,7 @@ from ..backtesting import (
 )
 from ..portfolio_construction.context import DataContext
 from ..workspace import CacheSource, RunManifest, WorkspaceRepository
-from .runners.identity import _optional_string
+from .runners.identity import _optional_string, _report_parameter_mapping
 from .runners.contracts import _PersistedMethodology
 from .runners.persistence import (
     _analytics_diagnostics_from_payload,
@@ -428,10 +428,20 @@ def _rehydrate_definition(manifest: RunManifest) -> IndexDefinition:
     if not isinstance(payload, Mapping):
         payload = {}
     methodology_name = (
-        _optional_string(payload.get("methodology_name")) or "PersistedMethodology"
+        _optional_string(payload.get("methodology_report_name"))
+        or _optional_string(payload.get("methodology_name"))
+        or "PersistedMethodology"
     )
-    raw_parameters = payload.get("methodology_parameters", {})
-    parameters = dict(raw_parameters) if isinstance(raw_parameters, Mapping) else {}
+    raw_parameters = payload.get("methodology_report_parameters")
+    if isinstance(raw_parameters, Mapping):
+        parameters = dict(raw_parameters)
+    else:
+        legacy_parameters = payload.get("methodology_parameters", {})
+        parameters = (
+            _report_parameter_mapping(legacy_parameters)
+            if isinstance(legacy_parameters, Mapping)
+            else {}
+        )
     raw_attributes = payload.get("attributes", {})
     attributes = dict(raw_attributes) if isinstance(raw_attributes, Mapping) else {}
     try:

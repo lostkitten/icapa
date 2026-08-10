@@ -12,8 +12,38 @@ import importlib.util
 import inspect
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
+
+from icapa.data_sources.provenance import private_parameter_digest
+
+
+_SOURCE_FILE_CACHE: dict[
+    tuple[Path, str, Path],
+    tuple[tuple[int, int, int], str, tuple[tuple[Path, str], ...]],
+] = {}
+_SOURCE_CLOSURE_CACHE: dict[
+    tuple[Path, str],
+    tuple[
+        tuple[tuple[Path, tuple[int, int, int]], ...],
+        dict[Path, str],
+    ],
+] = {}
+_BEHAVIOR_METHOD_NAMES = (
+    "apply",
+    "build_request",
+    "calculate",
+    "compute",
+    "estimate",
+    "execute",
+    "optimise",
+    "optimize",
+    "run",
+    "select",
+    "solve",
+    "transform",
+)
 
 
 def source_closure_identity(component: object) -> dict[str, Any]:
@@ -23,6 +53,11 @@ def source_closure_identity(component: object) -> dict[str, Any]:
     source_path = _source_path(target)
     module_name = getattr(target, "__module__", "")
     files = _local_source_closure(source_path, module_name)
+    project_root = _project_root(source_path, module_name)
+    source_key = source_path.relative_to(project_root)
+    source_digest = files.get(source_key)
+    if source_digest is None:
+        source_digest = sha256(source_path.read_bytes()).hexdigest()
     payload = [
         {
             "path": str(path),
@@ -35,7 +70,7 @@ def source_closure_identity(component: object) -> dict[str, Any]:
             f"{module_name}."
             f"{getattr(target, '__qualname__', getattr(target, '__name__', ''))}"
         ).strip("."),
-        "source_digest": sha256(source_path.read_bytes()).hexdigest(),
+        "source_digest": source_digest,
         "source_closure_digest": _json_digest(payload),
         "source_file_count": len(files),
     }
@@ -88,6 +123,249 @@ def callable_identity(value: object) -> dict[str, Any]:
     return result
 
 
+def component_tree_identity(
+    component: object,
+    *,
+    state_digest: str | None = None,
+) -> dict[str, Any]:
+    """Identify implementation source for a component and injected behavior.
+
+    Dataclass fields, mappings, and sequences are traversed recursively so a
+    custom solver, covariance estimator, or callable cannot hide behind the
+    source identity of its containing methodology. Unsupported opaque objects
+    fail closed and therefore make cacheable execution unavailable.
+    """
+
+    records: list[dict[str, Any]] = []
+    visited: set[int] = set()
+
+    def visit(value: Any, path: str, *, root: bool = False) -> None:
+        if value is None or isinstance(
+            value,
+            (bool, int, float, str, bytes, bytearray, Enum, date, datetime, Path),
+        ):
+            return
+        marker = id(value)
+        if marker in visited:
+            return
+        visited.add(marker)
+        if isinstance(value, Mapping):
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0])):
+                visit(item, f"{path}[{key!s}]")
+            return
+        if isinstance(value, (set, frozenset, list, tuple)):
+            for position, item in enumerate(value):
+                visit(item, f"{path}[{position}]")
+            return
+        if inspect.isclass(value):
+            records.append(
+                {
+                    "path": path,
+                    "component": source_closure_identity(value),
+                }
+            )
+            return
+        if callable(value) and not root:
+            records.append(
+                {
+                    "path": path,
+                    "callable": callable_identity(value),
+                }
+            )
+            if inspect.isfunction(value) or inspect.ismethod(value):
+                return
+        if root or _has_behavior_methods(value):
+            records.append(
+                {
+                    "path": path,
+                    "component": source_closure_identity(value),
+                }
+            )
+        if is_dataclass(value) and not isinstance(value, type):
+            values = (
+                (item.name, getattr(value, item.name))
+                for item in fields(value)
+            )
+        else:
+            attributes = getattr(value, "__dict__", None)
+            if not isinstance(attributes, dict):
+                return
+            values = (
+                (str(name), item)
+                for name, item in sorted(attributes.items())
+            )
+        for name, item in values:
+            visit(item, f"{path}.{name}")
+
+    visit(component, "root", root=True)
+    return {
+        "root_type": (
+            f"{type(component).__module__}.{type(component).__qualname__}"
+        ),
+        "components": records,
+        "state_digest": (
+            state_digest
+            if state_digest is not None
+            else component_tree_state_digest(component)
+        ),
+    }
+
+
+def _has_behavior_methods(value: object) -> bool:
+    if any(
+        callable(getattr(value, name, None))
+        for name in _BEHAVIOR_METHOD_NAMES
+    ):
+        return True
+    attributes = getattr(type(value), "__dict__", {})
+    return any(
+        not str(name).startswith("_") and callable(item)
+        for name, item in attributes.items()
+    )
+
+
+_VOLATILE_COMPONENT_STATE_FIELDS = frozenset(
+    {
+        "cache",
+        "call_count",
+        "calls",
+        "counter",
+        "counters",
+        "lock",
+        "memo",
+        "mutex",
+        "snapshot_requests",
+    }
+)
+
+
+def component_tree_state_digest(component: object) -> str:
+    """Hash recursively typed component state without exposing raw values."""
+
+    records: list[dict[str, str]] = []
+    visited: set[int] = set()
+
+    def record(value: Any, path: str) -> None:
+        records.append(
+            {
+                "path": path,
+                "value_digest": private_parameter_digest({"value": value}),
+            }
+        )
+
+    def visit(value: Any, path: str) -> None:
+        if value is None or isinstance(
+            value,
+            (
+                bool,
+                int,
+                float,
+                str,
+                bytes,
+                bytearray,
+                Enum,
+                date,
+                datetime,
+                Path,
+            ),
+        ):
+            record(value, path)
+            return
+        marker = id(value)
+        if marker in visited:
+            return
+        visited.add(marker)
+        if isinstance(value, Mapping):
+            key_records = [
+                (
+                    private_parameter_digest({"key": key}),
+                    item,
+                )
+                for key, item in value.items()
+            ]
+            record(
+                {
+                    "mapping_type": (
+                        f"{type(value).__module__}."
+                        f"{type(value).__qualname__}"
+                    ),
+                    "key_digests": tuple(
+                        key_digest
+                        for key_digest, _ in sorted(
+                            key_records,
+                            key=lambda item: item[0],
+                        )
+                    ),
+                },
+                path,
+            )
+            for position, (_, item) in enumerate(
+                sorted(key_records, key=lambda record: record[0])
+            ):
+                visit(item, f"{path}[{position}]")
+            return
+        if isinstance(value, (set, frozenset)):
+            # Supported scalar sets are identified atomically. A set of
+            # behavior objects is unordered and therefore fails closed.
+            record(value, path)
+            return
+        if isinstance(value, (list, tuple)):
+            record(
+                {
+                    "sequence_type": (
+                        f"{type(value).__module__}."
+                        f"{type(value).__qualname__}"
+                    ),
+                    "length": len(value),
+                },
+                path,
+            )
+            for position, item in enumerate(value):
+                visit(item, f"{path}[{position}]")
+            return
+        if inspect.isclass(value):
+            return
+        if inspect.isfunction(value) or inspect.ismethod(value):
+            records.append(
+                {
+                    "path": path,
+                    "value_digest": _json_digest(callable_identity(value)),
+                }
+            )
+            return
+        if is_dataclass(value) and not isinstance(value, type):
+            values = (
+                (item.name, getattr(value, item.name))
+                for item in fields(value)
+            )
+        else:
+            attributes = getattr(value, "__dict__", None)
+            if not isinstance(attributes, dict):
+                scalar = getattr(value, "item", None)
+                if callable(scalar):
+                    try:
+                        record(scalar(), path)
+                        return
+                    except (TypeError, ValueError):
+                        pass
+                raise ValueError(
+                    "component state contains unsupported value type "
+                    f"{type(value).__module__}.{type(value).__qualname__}"
+                )
+            values = (
+                (str(name), item)
+                for name, item in sorted(attributes.items())
+            )
+        for name, item in values:
+            normalized = name.strip("_").casefold()
+            if normalized in _VOLATILE_COMPONENT_STATE_FIELDS:
+                continue
+            visit(item, f"{path}.{name}")
+
+    visit(component, "root")
+    return _json_digest(records)
+
+
 def _callable_target(component: object) -> object:
     if inspect.isclass(component) or inspect.isfunction(component) or inspect.ismethod(
         component
@@ -101,10 +379,10 @@ def _source_path(target: object) -> Path:
         raw = inspect.getsourcefile(target) or inspect.getfile(target)
     except (OSError, TypeError) as exc:
         raise ValueError(f"cannot locate source for {target!r}") from exc
-    path = Path(raw)
+    path = _lexical_absolute(Path(raw))
     if not path.is_file():
         raise ValueError(f"component source is not a readable file: {path}")
-    return path.resolve()
+    return path
 
 
 def _local_source_closure(
@@ -112,36 +390,92 @@ def _local_source_closure(
     module_name: str,
 ) -> dict[Path, str]:
     project_root = _project_root(source_path, module_name)
-    pending: list[tuple[Path, str, int]] = [(source_path, module_name, 0)]
+    cache_key = (source_path, module_name)
+    cached = _SOURCE_CLOSURE_CACHE.get(cache_key)
+    if cached is not None and all(
+        _file_signature(path) == signature
+        for path, signature in cached[0]
+    ):
+        return dict(cached[1])
+    pending: list[tuple[Path, str]] = [(source_path, module_name)]
+    scheduled = {source_path}
     visited: dict[Path, str] = {}
     while pending:
-        path, current_module, depth = pending.pop()
-        path = path.resolve()
-        if path in visited or not path.is_file():
+        path, current_module = pending.pop()
+        if not path.is_relative_to(project_root):
             continue
-        if project_root is not None and not path.is_relative_to(project_root):
+        source = _cached_source_file(
+            path,
+            current_module=current_module,
+            project_root=project_root,
+        )
+        if source is None:
             continue
-        raw = path.read_bytes()
-        try:
-            tree = ast.parse(raw, filename=path.name)
-        except SyntaxError:
-            continue
+        digest, imports = source
         relative = path.relative_to(project_root) if project_root else path
-        visited[relative] = sha256(raw).hexdigest()
-        if len(visited) >= 128:
+        visited[relative] = digest
+        if len(visited) >= 512:
             break
-        if depth >= 2:
-            continue
-        pending.extend(
-            (candidate, name, depth + 1)
-            for candidate, name in _resolved_imports(
+        for candidate, name in imports:
+            if candidate in scheduled:
+                continue
+            scheduled.add(candidate)
+            pending.append((candidate, name))
+    absolute_signatures = tuple(
+        sorted(
+            (
+                (absolute, _file_signature(absolute))
+                for relative in visited
+                for absolute in (project_root.joinpath(relative),)
+            ),
+            key=lambda item: str(item[0]),
+        )
+    )
+    if len(_SOURCE_CLOSURE_CACHE) >= 256:
+        _SOURCE_CLOSURE_CACHE.clear()
+    _SOURCE_CLOSURE_CACHE[cache_key] = (
+        absolute_signatures,
+        dict(visited),
+    )
+    return visited
+
+
+def _cached_source_file(
+    path: Path,
+    *,
+    current_module: str,
+    project_root: Path,
+) -> tuple[str, tuple[tuple[Path, str], ...]] | None:
+    signature = _file_signature(path)
+    key = (path, current_module, project_root)
+    cached = _SOURCE_FILE_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1], cached[2]
+    try:
+        raw = path.read_bytes()
+        tree = ast.parse(raw, filename=path.name)
+    except (OSError, SyntaxError):
+        return None
+    result = (
+        sha256(raw).hexdigest(),
+        tuple(
+            _resolved_imports(
                 tree,
                 current_module=current_module,
                 current_path=path,
                 project_root=project_root,
             )
-        )
-    return visited
+        ),
+    )
+    if len(_SOURCE_FILE_CACHE) >= 4096:
+        _SOURCE_FILE_CACHE.clear()
+    _SOURCE_FILE_CACHE[key] = (signature, result[0], result[1])
+    return result
+
+
+def _file_signature(path: Path) -> tuple[int, int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
 
 def _project_root(source_path: Path, module_name: str) -> Path:
@@ -154,6 +488,13 @@ def _project_root(source_path: Path, module_name: str) -> Path:
     for _ in range(levels):
         root = root.parent
     return root
+
+
+def _lexical_absolute(path: Path) -> Path:
+    """Return one normalized absolute path without resolving filesystem links."""
+
+    absolute = path if path.is_absolute() else Path.cwd().joinpath(path)
+    return Path(os.path.normpath(os.fspath(absolute)))
 
 
 def _resolved_imports(
@@ -269,4 +610,9 @@ def _stable_value(value: Any) -> Any:
     )
 
 
-__all__ = ["callable_identity", "source_closure_identity"]
+__all__ = [
+    "callable_identity",
+    "component_tree_identity",
+    "component_tree_state_digest",
+    "source_closure_identity",
+]

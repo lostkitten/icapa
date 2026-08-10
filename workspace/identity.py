@@ -9,6 +9,7 @@ from .identity_canonical import (
     canonicalize,
     dataframe_content_digest,
     safe_parameter_identity,
+    secret_safe_canonicalize,
 )
 from .identity_components import (
     automatic_callable_identity,
@@ -36,4 +37,5 @@ __all__ = [
     "canonicalize",
     "dataframe_content_digest",
     "safe_parameter_identity",
+    "secret_safe_canonicalize",
 ]

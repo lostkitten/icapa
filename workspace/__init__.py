@@ -39,6 +39,7 @@ from .identity import (
     canonicalize,
     dataframe_content_digest,
     safe_parameter_identity,
+    secret_safe_canonicalize,
 )
 from .caches import (
     CacheMode,
@@ -104,5 +105,6 @@ __all__ = [
     "get_workspace_root",
     "register_review_diagnostic_enum",
     "safe_parameter_identity",
+    "secret_safe_canonicalize",
     "validate_workspace_name",
 ]

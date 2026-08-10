@@ -210,6 +210,126 @@ def automatic_digest(value: Any) -> str:
     return sha256(payload).hexdigest()
 
 
+def private_parameter_digest(parameters: Mapping[str, Any] | None) -> str:
+    """Hash exact provider parameters without exposing their raw values.
+
+    This identity is deliberately secret-sensitive and fail-closed.  It is
+    suitable only for internal equality and cache scoping; callers must never
+    persist the source mapping itself.
+    """
+
+    payload = json.dumps(
+        _private_parameter_value(dict(parameters or {})),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return sha256(
+        b"icapa-private-provider-parameter-scope-v1\0" + payload
+    ).hexdigest()
+
+
+def _private_parameter_value(value: Any) -> Any:
+    if value is None:
+        return {"type": "none"}
+    if isinstance(value, Enum):
+        return {
+            "type": "enum",
+            "enum_type": (
+                f"{type(value).__module__}.{type(value).__qualname__}"
+            ),
+            "value": _private_parameter_value(value.value),
+        }
+    if isinstance(value, str):
+        return {"type": "string", "value": value}
+    if isinstance(value, bool):
+        return {"type": "boolean", "value": value}
+    if isinstance(value, int):
+        return {"type": "integer", "value": str(value)}
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("private provider parameters must be finite")
+        return {"type": "float", "value": value.hex()}
+    if isinstance(value, pd.Timestamp):
+        timestamp = pd.Timestamp(value)
+        if pd.isna(timestamp):
+            raise ValueError("private provider parameters contain a null date")
+        return {"type": "pandas_timestamp", "value": timestamp.isoformat()}
+    if isinstance(value, datetime):
+        return {"type": "datetime", "value": value.isoformat()}
+    if isinstance(value, date):
+        return {"type": "date", "value": value.isoformat()}
+    if isinstance(value, Path):
+        return {
+            "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "value": str(value),
+        }
+    if isinstance(value, bytes):
+        return {
+            "type": "bytes",
+            "sha256": sha256(value).hexdigest(),
+            "length": len(value),
+        }
+    if isinstance(value, bytearray):
+        return {
+            "type": "bytearray",
+            "sha256": sha256(bytes(value)).hexdigest(),
+            "length": len(value),
+        }
+    if isinstance(value, np.generic):
+        return {
+            "type": "numpy_scalar",
+            "dtype": str(value.dtype),
+            "value": _private_parameter_value(value.item()),
+        }
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError(
+                "private provider parameter mappings require string keys"
+            )
+        return {
+            "type": "mapping",
+            "items": [
+                [key, _private_parameter_value(item)]
+                for key, item in sorted(value.items())
+            ],
+        }
+    if isinstance(value, (set, frozenset)):
+        items = [_private_parameter_value(item) for item in value]
+        return {
+            "type": "frozenset" if isinstance(value, frozenset) else "set",
+            "items": sorted(
+                items,
+                key=lambda item: json.dumps(
+                    item,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            ),
+        }
+    if isinstance(value, tuple):
+        return {
+            "type": "tuple",
+            "items": [_private_parameter_value(item) for item in value],
+        }
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "items": [_private_parameter_value(item) for item in value],
+        }
+    if isinstance(value, Sequence):
+        raise TypeError(
+            "private provider parameters contain unsupported sequence type "
+            f"{type(value).__module__}.{type(value).__qualname__}"
+        )
+    raise TypeError(
+        "private provider parameters contain unsupported value type "
+        f"{type(value).__module__}.{type(value).__qualname__}"
+    )
+
+
 def canonicalize(value: Any) -> Any:
     """Normalize supported identity values without exposing secrets."""
 
@@ -287,5 +407,6 @@ __all__ = [
     "automatic_data_identity",
     "automatic_provider_identity",
     "dataframe_content_digest",
+    "private_parameter_digest",
     "safe_parameter_identity",
 ]

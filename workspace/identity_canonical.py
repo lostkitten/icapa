@@ -1,4 +1,4 @@
-"""Canonical, secret-safe identities for values and tabular data."""
+"""Exact canonical values and explicit secret-safe identity projections."""
 
 from __future__ import annotations
 
@@ -19,21 +19,21 @@ import pandas as pd
 
 
 _SECRET_PARTS = (
-    "account",
+    "access_key",
+    "accesskey",
+    "api_key",
+    "apikey",
     "connection",
     "credential",
     "dsn",
     "endpoint",
-    "host",
     "password",
     "private_key",
     "query",
     "sql",
     "secret",
     "token",
-    "uri",
     "url",
-    "user",
 )
 
 _SENSITIVE_TEXT_PATTERNS = (
@@ -44,11 +44,40 @@ _SENSITIVE_TEXT_PATTERNS = (
     ),
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]*@"),
     re.compile(
-        r"(?i)\b(?:password|passwd|pwd|token|secret|api[_ -]?key|"
-        r"connection[_ -]?string)\s*[:=]\s*[^\s;,]+"
+        r"(?i)(?:^|[?&;,\s])(?:password|passwd|pwd|token|secret|"
+        r"api[_ -]?key|access[_ -]?key(?:[_ -]?id)?|accesskey|"
+        r"aws[_ -]?access[_ -]?key(?:[_ -]?id)?|private[_ -]?key|"
+        r"aws[_ -]?secret[_ -]?access[_ -]?key|"
+        r"client[_ -]?secret|connection[_ -]?string|authorization|auth|"
+        r"oauth|endpoint|user(?:name)?|user[_ -]?id|uid|query|sql)"
+        r"\s*[:=]\s*[^\s;&,]+"
     ),
     re.compile(
-        r"(?is)^\s*(?:select\b.+\bfrom\b|insert\s+into\b|update\b.+\bset\b|"
+        r"(?i)(?:authorization\s*:\s*)?\bbearer\s+"
+        r"[A-Za-z0-9._~+/=-]+"
+    ),
+    re.compile(
+        r"(?i)(?:authorization\s*:\s*)?\bbasic\s+"
+        r"[A-Za-z0-9+/]+={0,2}"
+    ),
+    re.compile(
+        r"(?i)-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----"
+    ),
+    re.compile(
+        r"(?m)^\s*(?:/[^\r\n]*|[A-Za-z]:[\\/][^\r\n]*|"
+        r"\\\\[^\\\r\n]+\\[^\r\n]*|~[\\/][^\r\n]*)\s*$"
+    ),
+    re.compile(
+        r"(?i)(?:^|(?<=[\s=:(,]))(?:"
+        r"/[A-Za-z0-9._~-][^\s;,)\r\n]*|"
+        r"[A-Za-z]:[\\/][^\s;,)\r\n]*|"
+        r"\\\\[^\\\s;,)\r\n]+\\[^\s;,)\r\n]*|"
+        r"~[\\/][^\s;,)\r\n]*"
+        r")"
+    ),
+    re.compile(
+        r"(?is)(?:^|[\s:;(=])(?:select\b.+?\bfrom\b|insert\s+into\b|"
+        r"update\b.+?\bset\b|"
         r"delete\s+from\b|merge\s+into\b|create\s+(?:table|view)\b|"
         r"alter\s+table\b|drop\s+(?:table|view)\b)"
     ),
@@ -93,7 +122,7 @@ def safe_parameter_identity(parameters: Mapping[str, Any] | None) -> dict[str, A
         str(key): (
             {"redacted": True}
             if _is_secret_key(str(key))
-            else canonicalize(value)
+            else secret_safe_canonicalize(value)
         )
         for key, value in sorted(parameters.items(), key=lambda item: str(item[0]))
     }
@@ -192,16 +221,18 @@ def _canonical_object_hash_token(value: Any) -> str:
 
 
 def canonicalize(value: Any) -> Any:
-    """Normalize supported values without silently dropping behavior."""
+    """Normalize supported values exactly without dropping structural fields.
+
+    This function is used by immutable cache metadata as well as calculation
+    identities. It deliberately does not apply public-output redaction: callers
+    that persist user/provider configuration must opt into
+    :func:`secret_safe_canonicalize` first.
+    """
 
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, str):
-        return (
-            _sensitive_identity_token(value)
-            if _is_sensitive_text(value)
-            else value
-        )
+        return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise IdentityError("identity values must not contain non-finite numbers")
@@ -236,21 +267,13 @@ def canonicalize(value: Any) -> Any:
             pass
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            item.name: (
-                _sensitive_identity_token(getattr(value, item.name))
-                if _is_secret_key(item.name)
-                else canonicalize(getattr(value, item.name))
-            )
+            item.name: canonicalize(getattr(value, item.name))
             for item in fields(value)
             if not item.name.startswith("_")
         }
     if isinstance(value, Mapping):
         return {
-            str(key): (
-                _sensitive_identity_token(item)
-                if _is_secret_key(str(key))
-                else canonicalize(item)
-            )
+            str(key): canonicalize(item)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
     if isinstance(value, (set, frozenset)):
@@ -271,11 +294,7 @@ def canonicalize(value: Any) -> Any:
         return {
             "component": automatic_component_identity(value),
             "configuration": {
-                key: (
-                    _sensitive_identity_token(item)
-                    if _is_secret_key(key)
-                    else canonicalize(item)
-                )
+                key: canonicalize(item)
                 for key, item in sorted(attributes.items())
                 if not key.startswith("_")
             },
@@ -283,6 +302,95 @@ def canonicalize(value: Any) -> Any:
     raise IdentityError(
         f"cannot build a stable automatic identity for {type(value).__qualname__}"
     )
+
+
+def secret_safe_canonicalize(value: Any) -> Any:
+    """Canonicalize public configuration while replacing sensitive material.
+
+    Unlike :func:`canonicalize`, this projection is intended for manifests and
+    reports. Sensitive keys and credential-bearing free text retain an
+    irreversible identity digest, so configuration changes still invalidate a
+    calculation identity without exposing the original value.
+    """
+
+    if _is_sensitive_identity_token(value):
+        return dict(value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, str):
+        return (
+            _sensitive_identity_token(value)
+            if _is_sensitive_text(value)
+            else value
+        )
+    if isinstance(value, float):
+        return canonicalize(value)
+    if isinstance(value, Enum):
+        return secret_safe_canonicalize(value.value)
+    if isinstance(value, (datetime, date, pd.Timestamp, Path)):
+        return canonicalize(value)
+    if isinstance(value, pd.DataFrame):
+        return canonicalize(value)
+    if isinstance(value, pd.Series):
+        return {
+            "series_name": secret_safe_canonicalize(value.name),
+            "dataframe_digest": dataframe_content_digest(value.to_frame()),
+        }
+    if isinstance(value, np.ndarray):
+        return secret_safe_canonicalize(value.tolist())
+    scalar = getattr(value, "item", None)
+    if callable(scalar):
+        try:
+            return secret_safe_canonicalize(scalar())
+        except (TypeError, ValueError):
+            pass
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: (
+                _sensitive_identity_token(getattr(value, item.name))
+                if _is_secret_key(item.name)
+                else secret_safe_canonicalize(getattr(value, item.name))
+            )
+            for item in fields(value)
+            if not item.name.startswith("_")
+        }
+    if isinstance(value, Mapping):
+        return {
+            str(key): (
+                _sensitive_identity_token(item)
+                if _is_secret_key(str(key))
+                else secret_safe_canonicalize(item)
+            )
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (set, frozenset)):
+        items = [secret_safe_canonicalize(item) for item in value]
+        return sorted(items, key=canonical_json_bytes)
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return [secret_safe_canonicalize(item) for item in value]
+    if inspect.isfunction(value) or inspect.ismethod(value):
+        return canonicalize(value)
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, dict) and not (
+        inspect.isfunction(value) or inspect.ismethod(value)
+    ):
+        from .identity_components import automatic_component_identity
+
+        return {
+            "component": automatic_component_identity(value),
+            "configuration": {
+                key: (
+                    _sensitive_identity_token(item)
+                    if _is_secret_key(key)
+                    else secret_safe_canonicalize(item)
+                )
+                for key, item in sorted(attributes.items())
+                if not key.startswith("_")
+            },
+        }
+    return canonicalize(value)
 
 
 
@@ -431,7 +539,43 @@ def _private_identity_value(value: Any) -> Any:
 
 def _is_secret_key(key: str) -> bool:
     lowered = key.casefold()
-    return any(part in lowered for part in _SECRET_PARTS)
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
+    tokens = re.findall(r"[a-z0-9]+", separated.casefold())
+    compact = "".join(tokens)
+    token_set = set(tokens)
+    return (
+        any(part in lowered for part in _SECRET_PARTS)
+        or bool(
+            token_set.intersection(
+                {
+                    "account",
+                    "auth",
+                    "authorization",
+                    "database",
+                    "host",
+                    "oauth",
+                    "role",
+                    "server",
+                    "uri",
+                    "user",
+                    "warehouse",
+                }
+            )
+        )
+        or ("schema" in token_set and "version" not in token_set)
+        or compact in {
+            "accountid",
+            "accountname",
+            "hostname",
+            "userid",
+            "username",
+        }
+        or (
+            "path" in token_set
+            and not token_set.intersection({"glide", "transition"})
+        )
+    )
 
 
 def _is_sensitive_text(value: str) -> bool:
@@ -453,4 +597,5 @@ __all__ = [
     "canonicalize",
     "dataframe_content_digest",
     "safe_parameter_identity",
+    "secret_safe_canonicalize",
 ]

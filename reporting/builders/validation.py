@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from enum import Enum
 import math
-import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from ..contracts import ReportDataError, _SAFE_LABEL, _SENSITIVE_KEY_PARTS
+from icapa.workspace.identity import secret_safe_canonicalize
+
+from ..contracts import (
+    ReportDataError,
+    _SAFE_LABEL,
+    _is_sensitive_key_name,
+)
 
 
 def _validation_row(
@@ -121,7 +126,8 @@ def _safe_parameter_value(value: Any) -> Any:
     if isinstance(value, str):
         if len(value) > 1_000:
             raise ReportDataError("report parameter strings are limited to 1,000 characters")
-        return value
+        canonical = secret_safe_canonicalize(value)
+        return "[REDACTED]" if isinstance(canonical, Mapping) else canonical
     if isinstance(value, Sequence) and not isinstance(
         value, (str, bytes, bytearray)
     ):
@@ -132,8 +138,7 @@ def _safe_parameter_value(value: Any) -> Any:
 
 
 def _reject_sensitive_key(value: str) -> None:
-    compact = re.sub(r"[^a-z0-9]", "", value.casefold())
-    if any(part in compact for part in _SENSITIVE_KEY_PARTS):
+    if _is_sensitive_key_name(value):
         raise ReportDataError(f"sensitive field is not permitted in reports: {value!r}")
 
 

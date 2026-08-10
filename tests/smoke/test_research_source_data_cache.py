@@ -27,6 +27,7 @@ from icapa.research import (
 from icapa.workspace.caches.source import (
     BusinessDayCacheLoader,
     SourceDataCacheLoader,
+    provider_snapshot_digest,
 )
 from icapa.workspace import (
     ArtifactIntegrityError,
@@ -235,6 +236,55 @@ class _FailingExactSnapshotProvider(_SnapshotProvider):
         return super().describe_snapshot(
             capability=capability,
             request=request,
+        )
+
+
+class _DatasetScopeProvider:
+    def describe_snapshot(self, *, capability, request):
+        return {
+            "revision": 1,
+            "capability": capability,
+            "instrument_scope": request.get("instrument_scope"),
+            "fields": tuple(request.get("fields", ())),
+        }
+
+
+class _UnacknowledgedDatasetScopeProvider:
+    def describe_snapshot(self, *, capability, request):
+        del request
+        return {"revision": 1, "capability": capability}
+
+
+def test_dataset_snapshot_scope_is_acknowledged_and_request_sensitive():
+    provider = _DatasetScopeProvider()
+    first = provider_snapshot_digest(
+        provider,
+        capability="load_third_party_data",
+        request={
+            "instrument_scope": "all_instruments",
+            "fields": ("quality",),
+        },
+    )
+    second = provider_snapshot_digest(
+        provider,
+        capability="load_third_party_data",
+        request={
+            "instrument_scope": "all_instruments",
+            "fields": ("value",),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first[0] != second[0]
+    with pytest.raises(
+        UnsafeCacheReuseError,
+        match="must acknowledge",
+    ):
+        provider_snapshot_digest(
+            _UnacknowledgedDatasetScopeProvider(),
+            capability="load_third_party_data",
+            request={"instrument_scope": "all_instruments"},
         )
 
 

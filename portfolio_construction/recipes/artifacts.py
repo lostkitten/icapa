@@ -7,7 +7,7 @@ changing this package.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from hashlib import sha256
 import json
@@ -283,7 +283,11 @@ def canonicalize(value: Any) -> JsonValue:
     if isinstance(value, np.generic):
         return canonicalize(value.item())
     if is_dataclass(value) and not isinstance(value, type):
-        return canonicalize(asdict(value))
+        return {
+            item.name: canonicalize(getattr(value, item.name))
+            for item in fields(value)
+            if not item.name.startswith("_")
+        }
     if isinstance(value, Mapping):
         return {
             str(key): canonicalize(item)

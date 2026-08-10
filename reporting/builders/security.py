@@ -14,6 +14,8 @@ from typing import Any
 
 import pandas as pd
 
+from icapa.workspace.identity import secret_safe_canonicalize
+
 from .bundle_constants import (
     _BEARER_CREDENTIAL_VALUE,
     _CONNECTION_ASSIGNMENT_VALUE,
@@ -24,10 +26,9 @@ from .bundle_constants import (
     _KEY_COLUMN_NAMES,
     _PAYLOAD_FIELD_BY_SHEET,
     _PRIVATE_KEY_VALUE,
-    _SENSITIVE_PARTS,
     _SQL_STATEMENT_VALUE,
 )
-from ..contracts import ReportBundleError, ReportPayload
+from ..contracts import ReportBundleError, ReportPayload, _is_sensitive_key_name
 
 def _workspace_reports_path(workspace: object) -> Path:
     raw = getattr(workspace, "reports_path", None)
@@ -63,8 +64,18 @@ def _manifest_value(manifest: Mapping[str, Any] | object | None, name: str) -> A
     return getattr(manifest, name, None)
 
 
+def _is_sensitive_identity_token(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == {"redacted", "identity_digest"}
+        and value.get("redacted") is True
+    )
+
+
 def _sanitize(value: Any, *, key: str = "") -> Any:
     if _is_sensitive_key(key):
+        return "[REDACTED]"
+    if _is_sensitive_identity_token(value):
         return "[REDACTED]"
     if isinstance(value, str):
         return "[REDACTED]" if _is_sensitive_string_value(value) else value
@@ -236,8 +247,7 @@ def _sanitize_report_table(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _is_sensitive_key(value: Any) -> bool:
-    folded = re.sub(r"[^a-z]", "", "" if value is None else str(value).casefold())
-    return bool(folded) and any(part in folded for part in _SENSITIVE_PARTS)
+    return _is_sensitive_key_name(value)
 
 
 def _is_key_column_name(value: Any) -> bool:
@@ -250,6 +260,8 @@ def _is_sensitive_string_value(value: str) -> bool:
 
     if not isinstance(value, str) or not value.strip():
         return False
+    if isinstance(secret_safe_canonicalize(value), Mapping):
+        return True
     return any(
         pattern.search(value) is not None
         for pattern in (
@@ -272,6 +284,8 @@ def _sanitize_output_value(value: Any, *, key: str = "") -> Any:
     """Sanitize a serialized value and hide sensitive mapping keys."""
 
     if _is_sensitive_key(key):
+        return "[REDACTED]"
+    if _is_sensitive_identity_token(value):
         return "[REDACTED]"
     if isinstance(value, str):
         return "[REDACTED]" if _is_sensitive_string_value(value) else value

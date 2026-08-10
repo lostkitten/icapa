@@ -9,8 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
+from datetime import date, datetime
+from enum import Enum
+from hashlib import sha256
+import math
+import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ...analytics import AnalyticsPluginRunner
@@ -24,7 +30,7 @@ from ...workspace import (
     dataframe_content_digest,
     safe_parameter_identity,
 )
-from ...workspace.identity import canonicalize
+from ...workspace.identity import secret_safe_canonicalize
 from .contracts import _PersistedMethodology
 from ..models import IndexDefinition, ResearchSpec
 
@@ -38,6 +44,9 @@ def automatic_runtime_identity():
 def _methodology_report_name(methodology: object) -> str:
     if isinstance(methodology, _PersistedMethodology):
         return methodology.report_name.rpartition(".")[2]
+    wrapped = _recipe_methodology(methodology)
+    if wrapped is not None:
+        return type(wrapped).__name__
     return type(methodology).__name__
 
 
@@ -45,8 +54,245 @@ def _methodology_report_parameters(
     methodology: object,
 ) -> dict[str, Any]:
     if isinstance(methodology, _PersistedMethodology):
-        return dict(methodology.parameters)
-    return _methodology_parameters(methodology)
+        raw = dict(methodology.parameters)
+    else:
+        wrapped = _recipe_methodology(methodology)
+        raw = _methodology_parameters(wrapped or methodology)
+
+    parameters = _report_parameter_mapping(raw)
+    recipe = getattr(methodology, "recipe", None)
+    if recipe is not None:
+        recipe_id = _report_parameter_value(getattr(recipe, "recipe_id", None))
+        recipe_version = _report_parameter_value(
+            getattr(recipe, "recipe_version", None)
+        )
+        if recipe_id is not _OMIT_REPORT_PARAMETER:
+            parameters["recipe_id"] = recipe_id
+        if recipe_version is not _OMIT_REPORT_PARAMETER:
+            parameters["recipe_version"] = recipe_version
+    return dict(sorted(parameters.items()))
+
+
+_OMIT_REPORT_PARAMETER = object()
+_REPORT_PRIVATE_NAME_PARTS = {
+    "accesskey",
+    "apikey",
+    "cache",
+    "connection",
+    "credential",
+    "dsn",
+    "endpoint",
+    "executor",
+    "oauth",
+    "password",
+    "privatekey",
+    "providername",
+    "providerparameter",
+    "query",
+    "runtime",
+    "secret",
+    "solver",
+    "sql",
+    "token",
+    "url",
+}
+def _recipe_methodology(methodology: object) -> object | None:
+    """Return one wrapped methodology without exposing recipe internals."""
+
+    recipe = getattr(methodology, "recipe", None)
+    nodes = getattr(recipe, "nodes", ()) if recipe is not None else ()
+    candidates: list[object] = []
+    seen: set[int] = set()
+    for node in nodes:
+        stage = getattr(node, "stage", None)
+        candidate = getattr(stage, "methodology", None)
+        if candidate is None or not callable(getattr(candidate, "execute", None)):
+            continue
+        identity = id(candidate)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        candidates.append(candidate)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _report_parameter_mapping(
+    values: Mapping[str, Any],
+    *,
+    depth: int = 0,
+    seen: frozenset[int] = frozenset(),
+) -> dict[str, Any]:
+    """Project configuration onto the report's public scalar contract."""
+
+    if depth > 12 or id(values) in seen:
+        return {}
+    lineage = seen.union((id(values),))
+    result: dict[str, Any] = {}
+    used: set[str] = set()
+    for raw_name, value in sorted(values.items(), key=lambda pair: str(pair[0])):
+        source_name = str(raw_name)
+        if _private_report_parameter_name(source_name):
+            continue
+        candidate = _report_parameter_value(
+            value,
+            depth=depth + 1,
+            seen=lineage,
+        )
+        if candidate is _OMIT_REPORT_PARAMETER:
+            continue
+        name = _safe_report_parameter_name(source_name, used)
+        used.add(name)
+        result[name] = candidate
+    return result
+
+
+def _report_parameter_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    seen: frozenset[int] = frozenset(),
+) -> Any:
+    if depth > 12:
+        return _OMIT_REPORT_PARAMETER
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, Enum):
+        return _report_parameter_value(
+            value.value,
+            depth=depth + 1,
+            seen=seen,
+        )
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        timestamp = pd.Timestamp(value)
+        return None if pd.isna(timestamp) else timestamp.isoformat()
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return number if math.isfinite(number) else _OMIT_REPORT_PARAMETER
+    if isinstance(value, str):
+        canonical = secret_safe_canonicalize(value)
+        return (
+            "[REDACTED]"
+            if isinstance(canonical, Mapping)
+            else canonical
+        )
+    if is_dataclass(value) and not isinstance(value, type):
+        if id(value) in seen:
+            return _OMIT_REPORT_PARAMETER
+        return _report_parameter_mapping(
+            {
+                item.name: getattr(value, item.name)
+                for item in fields(value)
+                if not item.name.startswith("_")
+            },
+            depth=depth + 1,
+            seen=seen.union((id(value),)),
+        )
+    if isinstance(value, Mapping):
+        if (
+            set(value) == {"redacted", "identity_digest"}
+            and value.get("redacted") is True
+        ):
+            return "[REDACTED]"
+        return _report_parameter_mapping(value, depth=depth + 1, seen=seen)
+    if isinstance(value, (set, frozenset)):
+        if id(value) in seen:
+            return _OMIT_REPORT_PARAMETER
+        lineage = seen.union((id(value),))
+        normalized = [
+            _report_parameter_value(item, depth=depth + 1, seen=lineage)
+            for item in value
+        ]
+        normalized = [
+            item for item in normalized if item is not _OMIT_REPORT_PARAMETER
+        ]
+        return tuple(sorted(normalized, key=lambda item: repr(item)))
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        if id(value) in seen:
+            return _OMIT_REPORT_PARAMETER
+        lineage = seen.union((id(value),))
+        normalized = [
+            _report_parameter_value(item, depth=depth + 1, seen=lineage)
+            for item in value
+        ]
+        normalized = [
+            item for item in normalized if item is not _OMIT_REPORT_PARAMETER
+        ]
+        if all(not isinstance(item, Mapping) for item in normalized):
+            return tuple(normalized)
+        return {
+            f"item_{position:03d}": item
+            for position, item in enumerate(normalized, start=1)
+        }
+    scalar = getattr(value, "item", None)
+    if callable(scalar):
+        try:
+            return _report_parameter_value(
+                scalar(),
+                depth=depth + 1,
+                seen=seen,
+            )
+        except (TypeError, ValueError):
+            pass
+    return _OMIT_REPORT_PARAMETER
+
+
+def _private_report_parameter_name(value: str) -> bool:
+    compact = re.sub(r"[^a-z0-9]", "", value.casefold())
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", value)
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
+    tokens = re.findall(r"[a-z0-9]+", separated.casefold())
+    token_set = set(tokens)
+    name_compact = "".join(tokens)
+    return (
+        any(part in compact for part in _REPORT_PRIVATE_NAME_PARTS)
+        or bool(
+            token_set.intersection(
+                {
+                    "account",
+                    "auth",
+                    "authorization",
+                    "database",
+                    "host",
+                    "oauth",
+                    "role",
+                    "server",
+                    "uri",
+                    "user",
+                    "warehouse",
+                }
+            )
+        )
+        or ("schema" in token_set and "version" not in token_set)
+        or name_compact in {
+            "accountid",
+            "accountname",
+            "hostname",
+            "userid",
+            "username",
+        }
+        or (
+            "path" in token_set
+            and not token_set.intersection({"glide", "transition"})
+        )
+    )
+
+
+def _safe_report_parameter_name(value: str, used: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]", "_", value.strip())
+    base = re.sub(r"_+", "_", base).strip("_") or "parameter"
+    if not base[0].isalpha():
+        base = f"item_{base}"
+    base = base[:128]
+    if base not in used:
+        return base
+    suffix = sha256(value.encode("utf-8")).hexdigest()[:8]
+    return f"{base[:119]}_{suffix}"
 
 
 def _persistable_methodology_parameters(
@@ -54,7 +300,7 @@ def _persistable_methodology_parameters(
 ) -> dict[str, Any]:
     raw = _methodology_parameters(methodology)
     try:
-        persisted = canonicalize(raw)
+        persisted = secret_safe_canonicalize(raw)
     except (IdentityError, OSError, TypeError, ValueError):
         return {
             "parameter_names": sorted(map(str, raw)),
@@ -200,6 +446,12 @@ def _request_payload(
                 f"{type(spec.definition.methodology).__qualname__}"
             ),
             "methodology_parameters": _persistable_methodology_parameters(
+                spec.definition.methodology
+            ),
+            "methodology_report_name": _methodology_report_name(
+                spec.definition.methodology
+            ),
+            "methodology_report_parameters": _methodology_report_parameters(
                 spec.definition.methodology
             ),
         },

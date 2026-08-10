@@ -30,6 +30,11 @@ EXCEL_V1_SEMANTIC_GOLDEN = (
 )
 
 
+def _runtime_sample(*parts: str) -> str:
+    """Assemble redaction fixtures without storing sensitive-shaped literals."""
+    return "".join(parts)
+
+
 def _context(
     effective_date: pd.Timestamp,
     rows: list[dict[str, object]],
@@ -269,6 +274,128 @@ def test_renderer_validates_template_and_marks_unavailable_sections(tmp_path):
     assert workbook["Exposures"]["A4"].value == "Not available"
     assert workbook["Latest Holdings"]["B4"].value == "'=unsafe formula text"
     assert not getattr(workbook, "_external_links", ())
+
+
+@pytest.mark.parametrize(
+    "parameter_name",
+    (
+        "api_key",
+        "access_key",
+        "endpoint",
+        "service_uri",
+        "serviceUri",
+        "connectionUriValue",
+        "account",
+        "authorization",
+        "auth",
+        "oauth",
+        "path",
+        "data_path",
+        "workspace_path",
+        "input_path",
+        "output_path",
+        "template_path",
+        "cache_path",
+        "artifact_path",
+        "file_path",
+        "connection_path",
+        "database",
+        "schema",
+        "server",
+        "warehouse",
+        "identity_digest",
+    ),
+)
+def test_report_payload_rejects_extended_sensitive_parameter_keys(
+    parameter_name,
+):
+    with pytest.raises(ReportDataError, match="sensitive field"):
+        ReportPayload.from_backtest_result(
+            _backtest_result(),
+            methodology_parameters={parameter_name: "must-not-appear"},
+        )
+
+
+def test_report_payload_retains_non_sensitive_ambiguous_substrings():
+    payload = ReportPayload.from_backtest_result(
+        _backtest_result(),
+        methodology_parameters={
+            "maturity": 7.5,
+            "security_count": 6,
+            "accounting_method": "daily_accrual",
+            "glide_path": "linear",
+            "transition_path": "staged",
+            "schema_version": "2026.1",
+        },
+    )
+
+    assert payload.methodology_parameters.set_index("parameter")[
+        "value"
+    ].to_dict() == {
+        "maturity": 7.5,
+        "security_count": 6,
+        "accounting_method": "daily_accrual",
+        "glide_path": "linear",
+        "transition_path": "staged",
+        "schema_version": "2026.1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("parameter_name", "parameter_value"),
+    (
+        ("bearer_note", "Bearer report-super-secret"),
+        (
+            "pem",
+            _runtime_sample(
+                "-----BEGIN PRIVATE ", "KEY-----\nreport-private-key"
+            ),
+        ),
+        ("comment", "Basic cmVwb3J0LWJhc2ljLXNlY3JldA=="),
+        (
+            "location_hint",
+            _runtime_sample("/", "Users/private/report/source.csv"),
+        ),
+        ("note_01", "access_key=assigned-access-key-secret"),
+        ("note_02", "aws_access_key_id=assigned-aws-key-secret"),
+        ("note_03", "authorization=Basic assigned-auth-secret"),
+        ("note_04", "endpoint=https://internal-endpoint.invalid/private"),
+        ("note_05", "user=assigned-user-secret"),
+        (
+            "note_06",
+            _runtime_sample("Loaded /", "Users/private/report/embedded.csv"),
+        ),
+        (
+            "note_07",
+            _runtime_sample("path=/", "Users/private/report/assigned.csv"),
+        ),
+        (
+            "note_08",
+            _runtime_sample(
+                "Loaded C:", r"\Users\private\report\embedded.csv"
+            ),
+        ),
+        ("note_09", "Loaded ~/private/report/embedded.csv"),
+        ("note_10", "aws_secret_access_key=assigned-aws-secret-key"),
+        ("note_11", "query=select * from private_query_table"),
+        (
+            "note_12",
+            "Provider failed: SELECT exposure FROM private_exposure_table",
+        ),
+    ),
+)
+def test_report_payload_redacts_generic_key_credential_values(
+    parameter_name,
+    parameter_value,
+):
+    payload = ReportPayload.from_backtest_result(
+        _backtest_result(),
+        methodology_parameters={parameter_name: parameter_value},
+    )
+
+    assert payload.methodology_parameters.to_dict(orient="records") == [
+        {"parameter": parameter_name, "value": "[REDACTED]"}
+    ]
 
 
 def test_excel_v1_semantic_golden_output_is_unchanged(tmp_path):

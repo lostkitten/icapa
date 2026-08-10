@@ -37,11 +37,41 @@ from icapa.portfolio_construction import (
 )
 from icapa.portfolio_construction.context import DataContext
 from icapa.portfolio_construction.recipes.artifacts import artifact_digest
+from icapa.portfolio_construction.recipes.fingerprints import (
+    component_tree_identity,
+    source_closure_identity,
+)
+from icapa.research import IndexDefinition
+from icapa.research.runners.identity import _methodology_component_identity
 
 
 RAW_SIGNAL = ArtifactKey("test", "raw_signal")
 FEATURES = ArtifactKey("test", "features")
 MEMBERSHIP_STATE = ArtifactKey("test", "membership_state")
+
+
+@dataclass(frozen=True)
+class _CompositeIdentityStage:
+    implementation: object
+
+    @property
+    def descriptor(self):
+        return StageDescriptor(kind="test.composite_identity")
+
+    @property
+    def requirements(self):
+        return StageRequirements()
+
+    @property
+    def outputs(self):
+        return (ArtifactOutput(CORE_TARGET_WEIGHTS),)
+
+    def canonical_configuration(self):
+        return {"component": type(self.implementation).__qualname__}
+
+    def run(self, inputs, runtime):
+        del inputs, runtime
+        raise AssertionError("identity test stages are never executed")
 
 
 def test_artifact_digest_distinguishes_adjacent_float64_values():
@@ -231,6 +261,159 @@ def test_recipe_identity_and_source_version_are_derived_automatically():
         RecipeCompiler().compile(
             IndexRecipe(nodes=(StageNode("opaque_builtin", unfingerprintable),))
         )
+
+
+def test_component_tree_identity_tracks_methodology_engine_and_injected_source(
+    tmp_path,
+):
+    package = tmp_path.joinpath("recipe_component_identity")
+    package.mkdir()
+    package.joinpath("__init__.py").write_text("", encoding="utf-8")
+    strategy = package.joinpath("strategy.py")
+    strategy.write_text(
+        "class Strategy:\n"
+        "    def __call__(self):\n"
+        "        return 1\n",
+        encoding="utf-8",
+    )
+    engine = package.joinpath("engine.py")
+    engine.write_text(
+        "class Solver:\n"
+        "    def __init__(self, strategy, tolerance):\n"
+        "        self._strategy = strategy\n"
+        "        self._tolerance = tolerance\n"
+        "    def solve(self):\n"
+        "        return self._strategy()\n",
+        encoding="utf-8",
+    )
+    methodology = package.joinpath("methodology.py")
+    methodology.write_text(
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class Methodology:\n"
+        "    _solver: object\n"
+        "    def execute(self, context):\n"
+        "        return context\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+    try:
+        methodology_module = importlib.import_module(
+            "recipe_component_identity.methodology"
+        )
+        engine_module = importlib.import_module(
+            "recipe_component_identity.engine"
+        )
+        strategy_module = importlib.import_module(
+            "recipe_component_identity.strategy"
+        )
+
+        def identities(tolerance=1e-6):
+            component = methodology_module.Methodology(
+                engine_module.Solver(
+                    strategy_module.Strategy(),
+                    tolerance,
+                )
+            )
+            recipe = IndexRecipe(
+                nodes=(
+                    StageNode(
+                        "weights",
+                        _CompositeIdentityStage(component),
+                    ),
+                )
+            )
+            plan = RecipeCompiler().compile(recipe)
+            definition_identity, verified = _methodology_component_identity(
+                IndexDefinition("IDENTITY_INDEX", recipe)
+            )
+            assert verified
+            return (
+                component_tree_identity(component),
+                plan.nodes[0].implementation_digest,
+                plan.recipe_digest,
+                definition_identity["recipe"]["recipe_digest"],
+            )
+
+        first = identities()
+        state_changed = identities(1e-3)
+        strategy.write_text(
+            strategy.read_text(encoding="utf-8") + "\nREVISION = 2\n",
+            encoding="utf-8",
+        )
+        strategy_changed = identities()
+        engine.write_text(
+            engine.read_text(encoding="utf-8") + "\nREVISION = 2\n",
+            encoding="utf-8",
+        )
+        engine_changed = identities()
+        methodology.write_text(
+            methodology.read_text(encoding="utf-8") + "\nREVISION = 2\n",
+            encoding="utf-8",
+        )
+        methodology_changed = identities()
+    finally:
+        sys.path.remove(str(tmp_path))
+        for name in (
+            "recipe_component_identity.strategy",
+            "recipe_component_identity.methodology",
+            "recipe_component_identity.engine",
+            "recipe_component_identity",
+        ):
+            sys.modules.pop(name, None)
+
+    assert first != state_changed
+    assert first != strategy_changed
+    assert strategy_changed != engine_changed
+    assert engine_changed != methodology_changed
+
+
+def test_source_closure_tracks_dependencies_beyond_three_import_hops(
+    tmp_path,
+):
+    package = tmp_path.joinpath("deep_recipe_identity")
+    package.mkdir()
+    package.joinpath("__init__.py").write_text("", encoding="utf-8")
+    deep_algorithm = package.joinpath("deep_algorithm.py")
+    deep_algorithm.write_text("VALUE = 1\n", encoding="utf-8")
+    package.joinpath("helper.py").write_text(
+        "from .deep_algorithm import VALUE\n"
+        "def calculate():\n"
+        "    return VALUE\n",
+        encoding="utf-8",
+    )
+    package.joinpath("engine.py").write_text(
+        "from .helper import calculate\n"
+        "def solve():\n"
+        "    return calculate()\n",
+        encoding="utf-8",
+    )
+    package.joinpath("component.py").write_text(
+        "from .engine import solve\n"
+        "class Component:\n"
+        "    def execute(self):\n"
+        "        return solve()\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+    try:
+        module = importlib.import_module("deep_recipe_identity.component")
+        first = source_closure_identity(module.Component())
+        deep_algorithm.write_text("VALUE = 2\n", encoding="utf-8")
+        changed = source_closure_identity(module.Component())
+    finally:
+        sys.path.remove(str(tmp_path))
+        for name in (
+            "deep_recipe_identity.component",
+            "deep_recipe_identity.engine",
+            "deep_recipe_identity.helper",
+            "deep_recipe_identity.deep_algorithm",
+            "deep_recipe_identity",
+        ):
+            sys.modules.pop(name, None)
+
+    assert first["source_closure_digest"] != changed["source_closure_digest"]
+    assert first["source_file_count"] == changed["source_file_count"] == 4
 
 
 def test_callable_stage_identity_includes_defaults_and_closure_state():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -57,6 +57,11 @@ _PROVIDER_NAME = "research_workflow_synthetic"
 _CALLS = {"universe": 0, "market": 0}
 _IDENTITY_CALLS = {"provider": 0}
 _RICH_CONTEXT_CALLS = {"methodology": 0}
+
+
+def _runtime_sample(*parts: str) -> str:
+    """Assemble redaction fixtures without storing sensitive-shaped literals."""
+    return "".join(parts)
 
 
 class _SyntheticProvider:
@@ -170,6 +175,113 @@ class _SensitiveParameterMethodology(_SnapshotMethodology):
         "postgresql://private-user:private-password@internal-host/research"
     )
     note: str = "password=private-password"
+
+
+@dataclass(frozen=True)
+class _ReportTarget:
+    field: str
+    direction: str
+    target: float
+
+
+@dataclass(frozen=True)
+class _PrivateReportSolver:
+    token: str = "private-solver-token"
+
+
+@dataclass(frozen=True)
+class _NestedReportMethodology(_SnapshotMethodology):
+    factor_tilts: dict[str, float] = field(
+        default_factory=lambda: {"quality-score": 0.7, "value": 0.3}
+    )
+    targets: tuple[_ReportTarget, ...] = field(
+        default_factory=lambda: (
+            _ReportTarget("quality", "minimum", 0.6),
+            _ReportTarget("carbon", "maximum", 0.2),
+        )
+    )
+    universe_provider_parameters: dict[str, str] = field(
+        default_factory=lambda: {
+            "password": "private-provider-password",
+            "dataset": "private-provider-dataset",
+        }
+    )
+    solver: _PrivateReportSolver = field(
+        default_factory=_PrivateReportSolver,
+        repr=False,
+    )
+    connection_url: str = (
+        "postgresql://private-user:private-password@internal-host/research"
+    )
+    api_key: str = "private-api-key"
+    access_key: str = "private-access-key"
+    endpoint: str = "internal-api.example.invalid"
+    service_uri: str = "custom://internal-service/private"
+    serviceUri: str = "custom://camel-service/private"
+    connectionUriValue: str = "custom://camel-connection/private"
+    maturity: float = 7.5
+    security_count: int = 6
+    accounting_method: str = "daily_accrual"
+    glide_path: str = "linear"
+    account: str = "private-service-account"
+    file_path: str = "/private/research/input.csv"
+    connection_path: str = "/private/connections/provider.json"
+    authorization: str = "Bearer manifest-super-secret"
+    pem: str = _runtime_sample(
+        "-----BEGIN PRIVATE ", "KEY-----\nmanifest-private-key"
+    )
+    comment: str = "Basic bWFuaWZlc3QtYmFzaWMtc2VjcmV0"
+    location_hint: str = _runtime_sample(
+        "/", "Users/private/research/source.csv"
+    )
+    storage_settings: dict[str, object] = field(
+        default_factory=lambda: {
+            "path": "/private/root",
+            "data_path": "/private/data",
+            "workspace_path": "/private/workspace",
+            "input_path": "/private/input",
+            "output_path": "/private/output",
+            "template_path": "/private/template",
+            "cache_path": "/private/cache",
+            "artifact_path": "/private/artifact",
+            "database": "private-database",
+            "schema": "private-schema",
+            "server": "private-server",
+            "warehouse": "private-warehouse",
+            "auth": "private-auth",
+            "oauth": "private-oauth",
+            "schema_version": "2026.1",
+            "glide_path": "nested-linear",
+            "transition_path": "staged",
+        }
+    )
+    note: str = "api_key=private-note-api-key"
+    description: str = "custom://private-user:private-pass@private-host/path"
+    business_notes: dict[str, str] = field(
+        default_factory=lambda: {
+            "note_01": "access_key=assigned-access-key-secret",
+            "note_02": "aws_access_key_id=assigned-aws-key-secret",
+            "note_03": "authorization=Basic assigned-auth-secret",
+            "note_04": "endpoint=https://internal-endpoint.invalid/private",
+            "note_05": "user=assigned-user-secret",
+            "note_06": _runtime_sample(
+                "Loaded /", "Users/private/research/embedded.csv"
+            ),
+            "note_07": _runtime_sample(
+                "path=/", "Users/private/research/assigned.csv"
+            ),
+            "note_08": _runtime_sample(
+                "Loaded C:", r"\Users\private\research\embedded.csv"
+            ),
+            "note_09": "Loaded ~/private/research/embedded.csv",
+            "note_10": "aws_secret_access_key=assigned-aws-secret-key",
+            "note_11": "query=select * from private_query_table",
+            "note_12": (
+                "Provider failed: SELECT exposure FROM "
+                "private_exposure_table"
+            ),
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -409,6 +521,291 @@ def test_high_level_pipeline_defaults_to_uncached_lightweight_results(
     assert workspace.latest() is None
     assert workspace.list() == ()
     assert workspace.list(include_invalidated=True) == (run.manifest_ref,)
+
+
+@pytest.mark.parametrize("recipe_wrapped", [False, True])
+def test_high_level_report_projects_nested_public_methodology_parameters(
+    tmp_path,
+    monkeypatch,
+    recipe_wrapped,
+):
+    monkeypatch.setenv("ICAPA_WORKSPACE_ROOT", str(tmp_path))
+    methodology = _NestedReportMethodology()
+    executable = (
+        IndexRecipe.from_methodology(
+            methodology,
+            recipe_id="nested_report_recipe",
+            recipe_version="1",
+        )
+        if recipe_wrapped
+        else methodology
+    )
+    workspace = ResearchWorkspace.open(
+        f"nested_report_{'recipe' if recipe_wrapped else 'direct'}"
+    )
+    spec = replace(
+        _spec(executable),
+        report=ReportBundleSpec(
+            name="nested_methodology_parameters",
+            formats=(ReportFormat.XLSX, ReportFormat.JSON),
+            overwrite=True,
+        ),
+    )
+
+    run = workspace.run(spec)
+
+    assert run.report is not None
+    workbook = load_workbook(run.report.files["report.xlsx"], data_only=True)
+    sheet = workbook["Methodology Parameters"]
+    rows = list(sheet.iter_rows(values_only=True))
+    header_position = next(
+        position
+        for position, row in enumerate(rows)
+        if tuple(row[:2]) == ("parameter", "value")
+    )
+    parameters = {
+        str(row[0]): row[1]
+        for row in rows[header_position + 1 :]
+        if row[0] is not None
+    }
+    assert parameters["factor_tilts.quality_score"] == 0.7
+    assert parameters["targets.item_001.field"] == "quality"
+    assert parameters["targets.item_001.target"] == 0.6
+    assert parameters["targets.item_002.direction"] == "maximum"
+    assert parameters["maturity"] == 7.5
+    assert parameters["security_count"] == 6
+    assert parameters["accounting_method"] == "daily_accrual"
+    assert parameters["glide_path"] == "linear"
+    assert parameters["pem"] == "[REDACTED]"
+    assert parameters["comment"] == "[REDACTED]"
+    assert parameters["location_hint"] == "[REDACTED]"
+    assert parameters["storage_settings.schema_version"] == "2026.1"
+    assert parameters["storage_settings.glide_path"] == "nested-linear"
+    assert parameters["storage_settings.transition_path"] == "staged"
+    assert parameters["note"] == "[REDACTED]"
+    assert parameters["description"] == "[REDACTED]"
+    for position in range(1, 13):
+        assert (
+            parameters[f"business_notes.note_{position:02d}"]
+            == "[REDACTED]"
+        )
+    assert ("recipe_id" in parameters) is recipe_wrapped
+    assert "service_uri" not in parameters
+    assert "serviceUri" not in parameters
+    assert "connectionUriValue" not in parameters
+    assert "account" not in parameters
+    assert "file_path" not in parameters
+    assert "connection_path" not in parameters
+    assert "authorization" not in parameters
+    for private_nested_parameter in (
+        "path",
+        "data_path",
+        "workspace_path",
+        "input_path",
+        "output_path",
+        "template_path",
+        "cache_path",
+        "artifact_path",
+        "database",
+        "schema",
+        "server",
+        "warehouse",
+        "auth",
+        "oauth",
+    ):
+        assert (
+            f"storage_settings.{private_nested_parameter}"
+            not in parameters
+        )
+    assert not any(
+        restricted in name.casefold()
+        for name in parameters
+        for restricted in (
+            "provider_name",
+            "provider_parameters",
+            "solver",
+            "connection",
+            "api_key",
+            "access_key",
+            "endpoint",
+            "password",
+            "token",
+            "url",
+        )
+    )
+
+    definition_request = run.manifest.request["definition"]
+    assert "methodology_parameters" in definition_request
+    assert "methodology_report_parameters" in definition_request
+    assert (
+        definition_request["methodology_parameters"]
+        != definition_request["methodology_report_parameters"]
+    )
+    assert "universe_provider_parameters" in repr(
+        definition_request["methodology_parameters"]
+    )
+    manifest_text = Path(run.manifest_ref.path).read_text(encoding="utf-8")
+    assert "identity_digest" in manifest_text
+
+    rendered_values = "\n".join(
+        str(cell)
+        for worksheet in workbook.worksheets
+        for row in worksheet.iter_rows(values_only=True)
+        for cell in row
+        if cell is not None
+    )
+    json_values = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in run.report.path.rglob("*.json")
+    )
+    for secret in (
+        "private-solver-token",
+        "private-provider-password",
+        "private-provider-dataset",
+        "private-api-key",
+        "private-access-key",
+        "private-user",
+        "private-password",
+        "internal-host",
+        "internal-api.example.invalid",
+        "internal-service",
+        "camel-service",
+        "camel-connection",
+        "private-note-api-key",
+        "private-pass",
+        "private-host",
+        "private-service-account",
+        "/private/research/input.csv",
+        "/private/connections/provider.json",
+        "manifest-super-secret",
+        "manifest-private-key",
+        "bWFuaWZlc3QtYmFzaWMtc2VjcmV0",
+        _runtime_sample("/", "Users/private/research/source.csv"),
+        "/private/root",
+        "/private/data",
+        "/private/workspace",
+        "/private/input",
+        "/private/output",
+        "/private/template",
+        "/private/cache",
+        "/private/artifact",
+        "private-database",
+        "private-schema",
+        "private-server",
+        "private-warehouse",
+        "private-auth",
+        "private-oauth",
+        "assigned-access-key-secret",
+        "assigned-aws-key-secret",
+        "assigned-auth-secret",
+        "internal-endpoint.invalid",
+        "assigned-user-secret",
+        _runtime_sample("/", "Users/private/research/embedded.csv"),
+        _runtime_sample("/", "Users/private/research/assigned.csv"),
+        _runtime_sample("C:", r"\Users\private\research\embedded.csv"),
+        "~/private/research/embedded.csv",
+        "assigned-aws-secret-key",
+        "private_query_table",
+        "private_exposure_table",
+    ):
+        if secret != "private-provider-dataset":
+            assert secret not in manifest_text
+        assert secret not in rendered_values
+        assert secret not in json_values
+    assert "identity_digest" not in rendered_values
+    assert "identity_digest" not in json_values
+
+    loaded = workspace.load_run(run.manifest.execution_id)
+    restored_report = workspace.write_report(
+        loaded,
+        spec=ReportBundleSpec(
+            name="rehydrated_nested_methodology_parameters",
+            formats=(ReportFormat.XLSX, ReportFormat.JSON),
+            overwrite=True,
+        ),
+    )
+    restored_workbook = load_workbook(
+        restored_report.files["report.xlsx"],
+        data_only=True,
+    )
+    restored_rows = list(
+        restored_workbook["Methodology Parameters"].iter_rows(
+            values_only=True
+        )
+    )
+    restored_header = next(
+        position
+        for position, row in enumerate(restored_rows)
+        if tuple(row[:2]) == ("parameter", "value")
+    )
+    restored_parameters = {
+        str(row[0]): row[1]
+        for row in restored_rows[restored_header + 1 :]
+        if row[0] is not None
+    }
+    assert restored_parameters == parameters
+
+    def methodology_name(book):
+        overview_rows = list(book["Overview"].iter_rows(values_only=True))
+        header = next(
+            position
+            for position, row in enumerate(overview_rows)
+            if tuple(row[:2]) == ("field", "value")
+        )
+        return {
+            str(row[0]): row[1]
+            for row in overview_rows[header + 1 :]
+            if row[0] is not None
+        }["methodology_name"]
+
+    assert methodology_name(restored_workbook) == methodology_name(workbook)
+    restored_json = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in restored_report.path.rglob("*.json")
+    )
+    assert "identity_digest" not in restored_json
+    for secret in (
+        "private-api-key",
+        "private-access-key",
+        "private-provider-dataset",
+        "internal-api.example.invalid",
+        "internal-service",
+        "manifest-super-secret",
+        "manifest-private-key",
+        "bWFuaWZlc3QtYmFzaWMtc2VjcmV0",
+        _runtime_sample("/", "Users/private/research/source.csv"),
+        "/private/root",
+        "private-database",
+        "private-schema",
+        "private-server",
+        "private-warehouse",
+        "private-auth",
+        "private-oauth",
+        "assigned-access-key-secret",
+        "assigned-aws-key-secret",
+        "assigned-auth-secret",
+        "internal-endpoint.invalid",
+        "assigned-user-secret",
+        _runtime_sample("/", "Users/private/research/embedded.csv"),
+        _runtime_sample("/", "Users/private/research/assigned.csv"),
+        _runtime_sample("C:", r"\Users\private\research\embedded.csv"),
+        "~/private/research/embedded.csv",
+        "assigned-aws-secret-key",
+        "private_query_table",
+        "private_exposure_table",
+    ):
+        assert secret not in restored_json
+
+
+def test_report_parameter_projection_stops_on_recursive_mappings():
+    from icapa.research.runners.identity import _report_parameter_mapping
+
+    recursive: dict[str, object] = {}
+    recursive["self"] = recursive
+
+    assert _report_parameter_mapping({"public": recursive}) == {
+        "public": {"self": {}}
+    }
 
 
 def test_requested_report_failure_marks_the_execution_failed_and_sanitized(

@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from hashlib import sha256
-import inspect
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
 from .artifacts import (
@@ -17,13 +14,15 @@ from .artifacts import (
     qualified_name,
 )
 from .contracts import (
-    CallableStage,
     IndexStage,
     PriorStatePolicy,
     RecipeCompilationError,
     StageCacheScope,
 )
-from .fingerprints import callable_identity, source_closure_identity
+from .fingerprints import (
+    component_tree_identity,
+    component_tree_state_digest,
+)
 
 
 @dataclass(frozen=True)
@@ -52,11 +51,29 @@ class IndexRecipe:
     required_artifacts: tuple[ArtifactKey, ...] = ()
     final_weights: ArtifactKey = CORE_TARGET_WEIGHTS
     validate_final_weights: bool = True
+    _implementation_state_digests: tuple[str | None, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         nodes = tuple(self.nodes)
         object.__setattr__(self, "nodes", nodes)
         object.__setattr__(self, "required_artifacts", tuple(self.required_artifacts))
+        state_digests: list[str | None] = []
+        for node in nodes:
+            try:
+                state_digests.append(
+                    component_tree_state_digest(node.stage)
+                )
+            except (OSError, TypeError, ValueError):
+                state_digests.append(None)
+        object.__setattr__(
+            self,
+            "_implementation_state_digests",
+            tuple(state_digests),
+        )
         identity_payload = [
             {
                 "node_id": node.node_id,
@@ -70,11 +87,14 @@ class IndexRecipe:
                 "kind": node.stage.descriptor.kind,
                 "declared_version": node.stage.descriptor.version,
                 "implementation_digest": (
-                    stage_implementation_digest(node.stage)
+                    stage_implementation_digest(
+                        node.stage,
+                        state_digest=state_digests[position],
+                    )
                     or f"unfingerprinted:{qualified_name(node.stage)}"
                 ),
             }
-            for node in nodes
+            for position, node in enumerate(nodes)
         ]
         if self.recipe_id is None:
             identity = canonical_digest(identity_payload)[:16]
@@ -143,6 +163,10 @@ class RecipeCompiler:
         if len(set(node_ids)) != len(node_ids):
             raise RecipeCompilationError("recipe node IDs must be unique")
         nodes_by_id = {node.node_id: node for node in recipe.nodes}
+        state_digests = {
+            node.node_id: recipe._implementation_state_digests[position]
+            for position, node in enumerate(recipe.nodes)
+        }
         for node in recipe.nodes:
             unknown = set(node.after) - set(nodes_by_id)
             if unknown:
@@ -159,7 +183,10 @@ class RecipeCompiler:
 
         for node in recipe.nodes:
             descriptor = node.stage.descriptor
-            implementation_digest = stage_implementation_digest(node.stage)
+            implementation_digest = stage_implementation_digest(
+                node.stage,
+                state_digest=state_digests[node.node_id],
+            )
             if (
                 implementation_digest is None
                 and descriptor.cache_scope is not StageCacheScope.DISABLED
@@ -238,7 +265,8 @@ class RecipeCompiler:
                 node=nodes_by_id[node_id],
                 dependencies=tuple(sorted(dependencies[node_id])),
                 implementation_digest=stage_implementation_digest(
-                    nodes_by_id[node_id].stage
+                    nodes_by_id[node_id].stage,
+                    state_digest=state_digests[node_id],
                 ),
             )
             for node_id in ordered_ids
@@ -295,52 +323,41 @@ class RecipeCompiler:
         return ordered
 
 
-def stage_implementation_digest(stage: IndexStage) -> str | None:
+def stage_implementation_digest(
+    stage: IndexStage,
+    *,
+    state_digest: str | None = None,
+) -> str | None:
     """Hash stage implementation source without researcher-maintained versions."""
 
-    target: Any = stage.function if isinstance(stage, CallableStage) else type(stage)
-    if isinstance(stage, CallableStage):
+    try:
+        automatic_component_identity = component_tree_identity(
+            stage,
+            state_digest=state_digest,
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+    wrapped_identity = None
+    wrapped_identity_collector = getattr(
+        stage,
+        "wrapped_implementation_identity",
+        None,
+    )
+    if callable(wrapped_identity_collector):
         try:
-            return canonical_digest(callable_identity(target))
+            wrapped_identity = wrapped_identity_collector()
         except (OSError, TypeError, ValueError):
             return None
+
     try:
-        return canonical_digest(source_closure_identity(target))
+        return canonical_digest(
+            {
+                "automatic_component_tree": automatic_component_identity,
+                "wrapped_implementation": wrapped_identity,
+            }
+        )
     except (OSError, TypeError, ValueError):
-        pass
-    candidates = [target]
-    call = getattr(target, "__call__", None)
-    if call is not None:
-        candidates.append(call)
-    if not isinstance(target, type):
-        candidates.append(type(target))
-    for candidate in candidates:
-        try:
-            source = inspect.getsource(candidate)
-        except (OSError, TypeError):
-            continue
-        if source.strip():
-            payload = (
-                qualified_name(candidate).encode("utf-8")
-                + b"\0"
-                + source.encode("utf-8")
-            )
-            return sha256(payload).hexdigest()
-    try:
-        source_file = inspect.getsourcefile(target)
-    except (OSError, TypeError):
-        source_file = None
-    if source_file:
-        path = Path(source_file)
-        try:
-            content = path.read_bytes()
-        except OSError:
-            pass
-        else:
-            return sha256(
-                qualified_name(target).encode("utf-8") + b"\0" + content
-            ).hexdigest()
-    return None
+        return None
 
 
 __all__ = [

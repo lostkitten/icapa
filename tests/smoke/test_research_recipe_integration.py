@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 import pandas as pd
@@ -11,6 +12,7 @@ import pytest
 import icapa.research.runners.identity as workflow_module
 from icapa.backtesting import Calendar, RebalanceFrequency
 from icapa.data_sources import register_provider, registry
+from icapa.data_sources.provenance import private_parameter_digest
 from icapa.portfolio_construction import (
     Artifact,
     ArtifactKey,
@@ -23,6 +25,7 @@ from icapa.portfolio_construction import (
     PriorReviewStateError,
     PriorStatePolicy,
     ProviderRequestSpec,
+    ReviewIdentity,
     StageCacheScope,
     StageDescriptor,
     StageNode,
@@ -40,8 +43,13 @@ from icapa.research import (
 from icapa.workspace import (
     CacheMode,
     CacheOptions,
+    CacheSource,
     CacheStage,
     automatic_digest,
+    clear_memory_cache,
+)
+from icapa.workspace.caches.source_identity import (
+    private_parameter_scope_digest,
 )
 
 
@@ -385,6 +393,70 @@ class _ProviderWeightStage:
 
 
 @dataclass
+class _MultiRequestProviderWeightStage:
+    calls: ClassVar[int] = 0
+
+    @property
+    def descriptor(self):
+        return StageDescriptor(
+            "test.multi_request_provider_weight_stage",
+            cache_scope=StageCacheScope.CONTENT,
+            side_effect=StageSideEffect.READ_ONLY_IO,
+        )
+
+    @property
+    def requirements(self):
+        requests = tuple(
+            ProviderRequestSpec(
+                "load_universe",
+                request_parameters={
+                    "universe_id": "RECIPE_UNIVERSE",
+                    "variant": variant,
+                },
+                review_dimensions=frozenset(
+                    {"reference_date", "effective_date"}
+                ),
+            )
+            for variant in ("primary", "secondary")
+        )
+        return StageRequirements(
+            provider_capabilities=("load_universe",),
+            provider_requests=requests,
+        )
+
+    @property
+    def outputs(self):
+        return (ArtifactOutput(CORE_TARGET_WEIGHTS),)
+
+    def canonical_configuration(self):
+        return {}
+
+    def run(self, inputs, runtime):
+        type(self).calls += 1
+        provider = runtime.providers["load_universe"]
+        frames = [
+            provider.load_universe(
+                universe_id="RECIPE_UNIVERSE",
+                variant=variant,
+                reference_date=inputs.review.reference_date,
+                effective_date=inputs.review.effective_date,
+            )
+            for variant in ("primary", "secondary")
+        ]
+        weights = frames[0].set_index("instrument_id")[
+            "benchmark_weight"
+        ]
+        return StageResult(
+            {
+                CORE_TARGET_WEIGHTS: Artifact.from_value(
+                    CORE_TARGET_WEIGHTS,
+                    weights,
+                )
+            }
+        )
+
+
+@dataclass
 class _UndeclaredProviderWeightStage(_ProviderWeightStage):
     @property
     def requirements(self):
@@ -563,6 +635,173 @@ def _reuse() -> CacheOptions:
     )
 
 
+def test_provider_request_contract_merges_fixed_binding_and_review_parameters():
+    parameters = {"tenant": "alpha"}
+    request = ProviderRequestSpec(
+        "load_universe",
+        review_dimensions=frozenset(
+            {"reference_date", "effective_date"}
+        ),
+        request_parameters={"universe_id": "RECIPE_UNIVERSE"},
+        expected_provider_name=_PROVIDER_NAME,
+        expected_provider_parameters=parameters,
+    )
+    review = ReviewIdentity(
+        index_id="RECIPE_INDEX",
+        reference_date="2026-04-24",
+        effective_date="2026-05-01",
+    )
+
+    request.validate_binding(_PROVIDER_NAME, parameters)
+    assert request.build_request(review, parameters) == {
+        "universe_id": "RECIPE_UNIVERSE",
+        "tenant": "alpha",
+        "reference_date": pd.Timestamp("2026-04-24"),
+        "effective_date": pd.Timestamp("2026-05-01"),
+    }
+    with pytest.raises(ValueError, match="expects provider"):
+        request.validate_binding("different_provider", parameters)
+    with pytest.raises(ValueError, match="binding parameters"):
+        request.validate_binding(_PROVIDER_NAME, {"tenant": "beta"})
+
+
+def test_provider_request_contract_supports_same_capability_snapshot_scopes():
+    first = ProviderRequestSpec(
+        "load_third_party_data",
+        request_parameters={"data_type": "factor", "fields": ("score",)},
+    )
+    second = ProviderRequestSpec(
+        "load_third_party_data",
+        request_parameters={
+            "data_type": "liquidity",
+            "fields": ("average_daily_value",),
+        },
+    )
+
+    requirements = StageRequirements(
+        provider_capabilities=("load_third_party_data",),
+        provider_requests=(first, second),
+    )
+
+    assert requirements.provider_requests == (first, second)
+
+
+def test_provider_request_contract_supports_nested_parameters_and_mapped_dates():
+    request = ProviderRequestSpec(
+        "load_third_party_data",
+        request_parameters={
+            "data_type": "factor",
+            "fields": ("quality",),
+        },
+        provider_parameters_key="parameters",
+        review_parameter_map={"as_of_date": "reference_date"},
+    )
+    review = ReviewIdentity(
+        index_id="RECIPE_INDEX",
+        reference_date="2026-04-24",
+        effective_date="2026-05-01",
+    )
+
+    assert request.build_request(review, {"tenant": "alpha"}) == {
+        "data_type": "factor",
+        "fields": ("quality",),
+        "parameters": {"tenant": "alpha"},
+        "as_of_date": pd.Timestamp("2026-04-24"),
+    }
+    with pytest.raises(ValueError, match="must not overlap"):
+        ProviderRequestSpec(
+            "load_universe",
+            request_parameters={"tenant": "fixed"},
+        ).build_request(review, {"tenant": "binding"})
+    with pytest.raises(ValueError, match="must not override review-bound"):
+        ProviderRequestSpec(
+            "load_universe",
+            review_dimensions=frozenset({"reference_date"}),
+            request_parameters={"reference_date": "fixed"},
+        ).build_request(review, {})
+
+
+def test_provider_request_parameter_identity_is_exact_and_fail_closed():
+    request = ProviderRequestSpec(
+        "load_universe",
+        expected_provider_parameters={"credential": b"alpha"},
+    )
+
+    request.validate_binding("provider", {"credential": b"alpha"})
+    with pytest.raises(ValueError, match="binding parameters"):
+        request.validate_binding("provider", {"credential": b"beta"})
+    with pytest.raises(TypeError, match="unsupported value type"):
+        ProviderRequestSpec(
+            "load_universe",
+            expected_provider_parameters={"opaque": object()},
+        )
+    assert private_parameter_scope_digest(
+        {"credential": b"alpha"}
+    ) == private_parameter_digest({"credential": b"alpha"})
+    assert private_parameter_digest({"value": (1, 2)}) != (
+        private_parameter_digest({"value": [1, 2]})
+    )
+    assert private_parameter_digest({"value": Path("/tmp/example")}) != (
+        private_parameter_digest({"value": "/tmp/example"})
+    )
+    assert private_parameter_digest({"value": b"alpha"}) != (
+        private_parameter_digest(
+            {
+                "value": {
+                    "type": "bytes",
+                    "sha256": "not-a-byte-digest",
+                    "length": 5,
+                }
+            }
+        )
+    )
+    with pytest.raises(TypeError, match="require string keys"):
+        private_parameter_digest({"value": {1: "alpha"}})
+
+
+def test_provider_request_contract_is_deeply_immutable_and_hashable():
+    source = {
+        "nested": {
+            "values": [1, 2],
+        }
+    }
+    first = ProviderRequestSpec(
+        "load_universe",
+        request_parameters=source,
+        expected_provider_parameters={"credential": b"alpha"},
+    )
+    equivalent = ProviderRequestSpec(
+        "load_universe",
+        request_parameters={"nested": {"values": [1, 2]}},
+        expected_provider_parameters={"credential": b"alpha"},
+    )
+    original_hash = hash(first)
+
+    source["nested"]["values"].append(3)
+    with pytest.raises(TypeError):
+        first.request_parameters["nested"]["extra"] = "mutation"
+    built = first.build_request(
+        ReviewIdentity(
+            index_id="RECIPE_INDEX",
+            reference_date="2026-04-24",
+            effective_date="2026-05-01",
+        ),
+        {"credential": b"alpha"},
+    )
+    built["nested"]["values"].append(4)
+
+    assert first == equivalent
+    assert hash(first) == original_hash == hash(equivalent)
+    assert first.build_request(
+        ReviewIdentity(
+            index_id="RECIPE_INDEX",
+            reference_date="2026-04-24",
+            effective_date="2026-05-01",
+        ),
+        {"credential": b"alpha"},
+    )["nested"]["values"] == [1, 2]
+
+
 def test_recipe_provider_binding_is_explicit_manifested_and_reused(
     tmp_path,
     monkeypatch,
@@ -661,6 +900,50 @@ def test_recipe_snapshot_uses_the_declared_exact_provider_request(
             pd.Timestamp(request["effective_date"]).normalize(),
         )
         for request in provider.load_requests
+    }
+
+
+def test_multiple_same_capability_requests_are_snapshotted_and_reused(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ICAPA_WORKSPACE_ROOT", str(tmp_path))
+    provider = _SnapshotUniverseProvider()
+    register_provider(_PROVIDER_NAME, provider, replace=True)
+    _MultiRequestProviderWeightStage.calls = 0
+    spec = ResearchSpec(
+        definition=IndexDefinition(
+            "RECIPE_MULTI_REQUEST_INDEX",
+            _recipe(_MultiRequestProviderWeightStage()),
+        ),
+        calendar=_calendar(),
+        recipe_providers={"load_universe": _PROVIDER_NAME},
+        analytics=None,
+        cache=_reuse(),
+    )
+    try:
+        workspace = ResearchWorkspace.open("recipe_multi_request")
+        first = workspace.run(spec)
+        calls_after_first = provider.load_calls
+        clear_memory_cache()
+        second = workspace.run(spec)
+    finally:
+        registry.unregister(_PROVIDER_NAME)
+
+    assert calls_after_first == 4
+    assert provider.load_calls == calls_after_first
+    assert _MultiRequestProviderWeightStage.calls == 2
+    assert {
+        item.cache_source
+        for item in first.backtest.metadata.reviews.values()
+    } == {CacheSource.COMPUTED}
+    assert {
+        item.cache_source
+        for item in second.backtest.metadata.reviews.values()
+    } == {CacheSource.DISK}
+    assert {request["variant"] for request in provider.snapshot_requests} == {
+        "primary",
+        "secondary",
     }
 
 

@@ -13,6 +13,8 @@ from typing import Any
 from ...data_sources.providers.registry import registry
 from ...portfolio_construction import ProviderRequestSpec, StageSideEffect
 from ...workspace import (
+    CacheMode,
+    CacheStage,
     automatic_digest,
     automatic_provider_identity,
     safe_parameter_identity,
@@ -26,6 +28,7 @@ from ..models import ResearchSpec, UnsafeCacheReuseError
 def _provider_identities(
     spec: ResearchSpec,
 ) -> _ProviderEvidence:
+    _validate_recipe_provider_bindings(spec)
     requests = _provider_requests(spec)
     records: dict[str, Mapping[str, Any]] = {}
     review_records: dict[str, Mapping[str, Any]] = {}
@@ -34,7 +37,7 @@ def _provider_identities(
     review_verified = True
     calendar_verified = True
     simulation_verified = True
-    for provider_name, capability, parameters, usage, _ in requests:
+    for provider_name, capability, parameters, usage, _, _ in requests:
         try:
             provider = registry.get(provider_name)
             record: Mapping[str, Any] = {
@@ -84,8 +87,17 @@ def _provider_identities(
 
 def _provider_requests(
     spec: ResearchSpec,
-) -> list[tuple[str, str, Mapping[str, Any], str, str]]:
-    requests: list[tuple[str, str, Mapping[str, Any], str, str]] = []
+) -> list[
+    tuple[
+        str,
+        str,
+        Mapping[str, Any],
+        str,
+        str,
+        ProviderRequestSpec | None,
+    ]
+]:
+    requests = []
     required_recipe_capabilities = (
         set()
         if spec.definition.recipe is None
@@ -95,9 +107,33 @@ def _provider_requests(
             for capability in node.stage.requirements.provider_capabilities
         }
     )
-    for capability, binding in sorted(spec.recipe_providers.items()):
-        if capability not in required_recipe_capabilities:
-            continue
+    declared_recipe_capabilities: set[str] = set()
+    if spec.definition.recipe is not None:
+        for node in spec.definition.recipe.nodes:
+            for position, request in enumerate(
+                node.stage.requirements.provider_requests
+            ):
+                declared_recipe_capabilities.add(request.capability)
+                binding = spec.recipe_providers[request.capability]
+                declared_parameters = request.declared_provider_parameters
+                requests.append(
+                    (
+                        request.expected_provider_name or binding.provider_name,
+                        request.capability,
+                        dict(
+                            binding.parameters
+                            if declared_parameters is None
+                            else declared_parameters
+                        ),
+                        "review",
+                        f"recipe:{node.node_id}:{position}",
+                        request,
+                    )
+                )
+    for capability in sorted(
+        required_recipe_capabilities - declared_recipe_capabilities
+    ):
+        binding = spec.recipe_providers[capability]
         requests.append(
             (
                 binding.provider_name,
@@ -105,6 +141,7 @@ def _provider_requests(
                 dict(binding.parameters),
                 "review",
                 f"recipe:{capability}",
+                None,
             )
         )
     methodology = spec.definition.methodology
@@ -127,6 +164,7 @@ def _provider_requests(
                 dict(parameters or {}),
                 "review",
                 prefix,
+                None,
             )
         )
     if spec.calendar.provider_name:
@@ -137,6 +175,7 @@ def _provider_requests(
                 dict(spec.calendar.provider_parameters),
                 "calendar",
                 "calendar",
+                None,
             )
         )
         try:
@@ -151,6 +190,7 @@ def _provider_requests(
                     dict(spec.calendar.provider_parameters),
                     "simulation",
                     "business_days",
+                    None,
                 )
             )
     if spec.simulation is not None:
@@ -161,6 +201,7 @@ def _provider_requests(
                 dict(spec.simulation.provider_parameters),
                 "simulation",
                 "market_data",
+                None,
             )
         )
     return requests
@@ -236,6 +277,20 @@ def _validate_recipe_provider_request_contracts(
     recipe = spec.definition.recipe
     if recipe is None:
         return
+    requests = tuple(
+        request
+        for node in recipe.nodes
+        for request in node.stage.requirements.provider_requests
+    )
+    if any(request.covers_all_instruments for request in requests) and not any(
+        request.capability == "load_universe"
+        and not request.covers_all_instruments
+        for request in requests
+    ):
+        raise UnsafeCacheReuseError(
+            "dataset-level provider snapshot requests require a paired exact "
+            "universe snapshot request"
+        )
     for node in recipe.nodes:
         requirements = node.stage.requirements
         declared = {request.capability for request in requirements.provider_requests}
@@ -246,6 +301,73 @@ def _validate_recipe_provider_request_contracts(
                 "caching because it does not declare exact provider requests "
                 f"for capabilities: {sorted(missing)}"
             )
+
+
+def _validate_recipe_provider_bindings(spec: ResearchSpec) -> None:
+    """Align runtime bindings with the providers actually read by a recipe."""
+
+    recipe = spec.definition.recipe
+    if recipe is None:
+        return
+    by_capability: dict[str, list[ProviderRequestSpec]] = {}
+    for node in recipe.nodes:
+        for request in node.stage.requirements.provider_requests:
+            by_capability.setdefault(request.capability, []).append(request)
+    review_mode = spec.cache.mode_for(CacheStage.REVIEWS)
+    for capability, requests in by_capability.items():
+        binding = spec.recipe_providers.get(capability)
+        if binding is None:
+            raise UnsafeCacheReuseError(
+                f"recipe has no provider binding for capability {capability!r}"
+            )
+        expected_bindings = {
+            (
+                request.expected_provider_name,
+                request.expected_provider_parameters_digest,
+            )
+            for request in requests
+            if request.expected_provider_name is not None
+            or request.expected_provider_parameters_digest is not None
+        }
+        if len(expected_bindings) > 1:
+            if review_mode is not CacheMode.OFF:
+                raise UnsafeCacheReuseError(
+                    f"non-OFF review caching supports one shared provider "
+                    f"binding per capability; {capability!r} declares "
+                    "multiple providers or parameter scopes"
+                )
+            if not any(
+                _binding_matches(request, binding.provider_name, binding.parameters)
+                for request in requests
+            ):
+                raise UnsafeCacheReuseError(
+                    f"recipe provider binding for {capability!r} does not match "
+                    "any provider used by the OFF-mode recipe stage"
+                )
+            continue
+        for request in requests:
+            try:
+                request.validate_binding(
+                    binding.provider_name,
+                    binding.parameters,
+                )
+            except (TypeError, ValueError) as error:
+                raise UnsafeCacheReuseError(
+                    f"recipe provider binding does not match its declared "
+                    f"{capability!r} request"
+                ) from error
+
+
+def _binding_matches(
+    request: ProviderRequestSpec,
+    provider_name: str,
+    provider_parameters: Mapping[str, Any],
+) -> bool:
+    try:
+        request.validate_binding(provider_name, provider_parameters)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _recipe_provider_request_specs(

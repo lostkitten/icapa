@@ -34,7 +34,6 @@ from .contracts import (
 from .providers import (
     _provider_requests,
     _recipe_has_no_external_inputs,
-    _recipe_provider_request_specs,
     _validate_recipe_provider_request_contracts,
 )
 from ..models import ResearchSpec, UnsafeCacheReuseError
@@ -52,13 +51,20 @@ def _review_snapshot(
     review_requests = [item for item in _provider_requests(spec) if item[3] == "review"]
     if review_requests:
         exact_requests: list[_ExactReviewProviderBinding] = []
-        for provider_name, capability, parameters, _, prefix in review_requests:
+        for (
+            provider_name,
+            capability,
+            parameters,
+            _,
+            prefix,
+            declared_request,
+        ) in review_requests:
             provider = registry.get(provider_name)
             if not callable(getattr(provider, "describe_snapshot", None)):
                 exact_requests = []
                 break
             request_specs = (
-                _recipe_provider_request_specs(spec, capability)
+                (declared_request,)
                 if prefix.startswith("recipe:")
                 else (None,)
             )
@@ -312,6 +318,7 @@ def _legacy_review_snapshot(
                 capability,
                 parameters,
                 usage,
+                _,
                 _,
             ) in _provider_requests(spec)
             if usage == "review"

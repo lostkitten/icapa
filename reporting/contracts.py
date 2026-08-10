@@ -96,29 +96,70 @@ SHEET_COLUMNS: dict[str, tuple[str, ...]] = {
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._&(),/+-]{0,127}$")
 _SAFE_FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{0,127}$")
 _SENSITIVE_KEY_PARTS = {
-    "account",
+    "accesskey",
+    "apikey",
     "connection",
     "credential",
-    "database",
     "dsn",
+    "endpoint",
     "executor",
-    "host",
+    "identitydigest",
     "oauth",
     "password",
-    "path",
     "privatekey",
     "providerparameter",
     "query",
-    "role",
-    "schema",
     "secret",
-    "server",
     "sql",
     "token",
     "url",
-    "user",
-    "warehouse",
 }
+
+
+def _sensitive_key_tokens(value: object) -> tuple[str, ...]:
+    text = str(value)
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
+    return tuple(re.findall(r"[a-z0-9]+", separated.casefold()))
+
+
+def _is_sensitive_key_name(value: object) -> bool:
+    text = str(value)
+    compact = re.sub(r"[^a-z0-9]", "", text.casefold())
+    tokens = set(_sensitive_key_tokens(text))
+    name_compact = "".join(_sensitive_key_tokens(text))
+    return (
+        any(part in compact for part in _SENSITIVE_KEY_PARTS)
+        or bool(
+            tokens.intersection(
+                {
+                    "account",
+                    "auth",
+                    "authorization",
+                    "database",
+                    "host",
+                    "oauth",
+                    "role",
+                    "server",
+                    "uri",
+                    "user",
+                    "warehouse",
+                }
+            )
+        )
+        or ("schema" in tokens and "version" not in tokens)
+        or name_compact in {
+            "accountid",
+            "accountname",
+            "hostname",
+            "userid",
+            "username",
+        }
+        or (
+            "path" in tokens
+            and not tokens.intersection({"glide", "transition"})
+        )
+    )
 
 
 class ReportDataError(ValueError):

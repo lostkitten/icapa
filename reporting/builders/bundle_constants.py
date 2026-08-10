@@ -8,23 +8,21 @@ import re
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 _SENSITIVE_PARTS = {
+    "accesskey",
+    "apikey",
     "connection",
     "credential",
-    "database",
     "dsn",
-    "host",
+    "endpoint",
+    "identitydigest",
     "password",
-    "path",
     "privatekey",
+    "providerparameter",
     "query",
-    "schema",
     "secret",
-    "server",
     "sql",
     "token",
     "url",
-    "user",
-    "warehouse",
 }
 _KEY_COLUMN_NAMES = {
     "attribute",

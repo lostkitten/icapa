@@ -29,7 +29,10 @@ from icapa.workspace import (
     dataframe_content_digest,
     safe_parameter_identity,
 )
-from icapa.workspace.identity import canonical_json_bytes
+from icapa.workspace.identity import (
+    canonical_json_bytes,
+    secret_safe_canonicalize,
+)
 
 
 @dataclass
@@ -102,10 +105,10 @@ def test_sensitive_values_are_redacted_without_collapsing_identity():
     assert automatic_digest(first_uri) != automatic_digest(second_uri)
 
     encoded = canonical_json_bytes(
-        {
+        secret_safe_canonicalize({
             "password": first_password,
             "status": first_uri,
-        }
+        })
     ).decode("utf-8")
     assert first_password not in encoded
     assert first_uri not in encoded
@@ -238,7 +241,11 @@ def test_parameter_identity_never_serializes_secret_values():
     )
 
     assert identity["keys"] == ["access_token", "database", "password"]
-    assert identity["redacted_keys"] == ["access_token", "password"]
+    assert identity["redacted_keys"] == [
+        "access_token",
+        "database",
+        "password",
+    ]
     assert "sensitive" not in str(identity)
 
 
@@ -314,12 +321,30 @@ def test_manifest_is_automatic_fixed_and_catalogued(tmp_path, monkeypatch):
             {
                 "input_type": "canonical_universe",
                 "content_digest": "c" * 64,
+                "notes": {
+                    "credential": "access_key=input-digest-secret",
+                    "query_note": "query=select * from private_input_table",
+                    "failure_note": (
+                        "Provider failed: SELECT exposure FROM "
+                        "private_input_exposure"
+                    ),
+                },
             }
         ],
     )
     assert completed.status == "complete"
     assert completed.result_fingerprint is not None
     assert completed.input_digests[0]["content_digest"] == "c" * 64
+    completed_manifest_text = Path(
+        workspace.manifest_ref(completed).path
+    ).read_text(encoding="utf-8")
+    for sensitive_text in (
+        "input-digest-secret",
+        "private_input_table",
+        "private_input_exposure",
+    ):
+        assert sensitive_text not in completed_manifest_text
+    assert "identity_digest" in completed_manifest_text
     assert workspace.latest_manifest() == completed
 
     second = workspace.start_run(
@@ -693,7 +718,22 @@ def test_catalog_lifecycle_preserves_immutable_objects(tmp_path, monkeypatch):
         definition={"producer": "automatic"},
         request={"effective_date": "2026-06-22"},
     )
-    workspace.complete_run(manifest, artifacts=[reference])
+    completed = workspace.complete_run(manifest, artifacts=[reference])
+    reopened = WorkspaceRepository.open("catalog_lifecycle")
+    restored_manifest = reopened.open_manifest(
+        workspace.manifest_ref(completed)
+    )
+    assert restored_manifest.artifacts[0].relative_path == (
+        reference.relative_path
+    )
+    pd.testing.assert_frame_equal(reopened.load_frame(reference), frame)
+    restored_binding = reopened.resolve_artifact(
+        stage=CacheStage.REVIEWS,
+        cache_key=cache_key,
+        name="weights",
+    )
+    assert restored_binding is not None
+    assert restored_binding.relative_path == reference.relative_path
 
     assert workspace.verify()["status"] == "ok"
     assert workspace.invalidate(

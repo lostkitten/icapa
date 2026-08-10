@@ -18,7 +18,10 @@ from .source_contracts import (
     SCHEMA_VERSION as _SCHEMA_VERSION,
     SNAPSHOT_BINDING_NAME as _SNAPSHOT_BINDING_NAME,
 )
-from .source_identity import private_parameter_scope_digest
+from .source_identity import (
+    UnsafeCacheReuseError,
+    private_parameter_scope_digest,
+)
 from .source_partitions import decode_snapshot_frame as _decode_snapshot_frame
 
 
@@ -48,6 +51,16 @@ def provider_snapshot_digest(
         identity = method(capability=capability, request=dict(request))
         if identity is None:
             continue
+        requested_scope = request.get("instrument_scope")
+        if requested_scope == "all_instruments":
+            if (
+                not isinstance(identity, Mapping)
+                or identity.get("instrument_scope") != requested_scope
+            ):
+                raise UnsafeCacheReuseError(
+                    "dataset-level snapshot identity must acknowledge "
+                    "instrument_scope='all_instruments'"
+                )
         return (
             automatic_digest(
                 {

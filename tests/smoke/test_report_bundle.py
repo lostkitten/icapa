@@ -29,6 +29,11 @@ from icapa.reporting import (
 from icapa.portfolio_construction.context import DataContext
 
 
+def _runtime_sample(*parts: str) -> str:
+    """Assemble redaction fixtures without storing sensitive-shaped literals."""
+    return "".join(parts)
+
+
 @dataclass
 class _Workspace:
     workspace_name: str
@@ -288,6 +293,33 @@ def test_sensitive_plugin_table_fields_are_redacted_in_every_format(tmp_path):
         },
         methodology_parameters={
             "api_token": "methodology-secret",
+            "serviceUri": "camel-uri-secret",
+            "connectionUriValue": "camel-connection-secret",
+            "account": "bundle-private-account",
+            "file_path": "/private/bundle/input.csv",
+            "authorization": "Bearer bundle-super-secret",
+            "pem": _runtime_sample(
+                "-----BEGIN PRIVATE ", "KEY-----\nbundle-private-key"
+            ),
+            "comment": "Basic YnVuZGxlLWJhc2ljLXNlY3JldA==",
+            "location_hint": _runtime_sample(
+                "/", "Users/private/bundle/source.csv"
+            ),
+            "accounting_method": "daily_accrual",
+            "glide_path": "linear",
+            "transition_path": "staged",
+            "schema_version": "2026.1",
+            "storage_settings": {
+                "path": "/private/bundle/root",
+                "database": "bundle-private-database",
+                "schema": "bundle-private-schema",
+                "server": "bundle-private-server",
+                "warehouse": "bundle-private-warehouse",
+                "oauth": "bundle-private-oauth",
+                "glide_path": "nested-linear",
+                "transition_path": "nested-staged",
+                "schema_version": "2026.2",
+            },
             "safe_parameter": 0.25,
         },
         spec=ReportBundleSpec(name="redaction"),
@@ -295,7 +327,19 @@ def test_sensitive_plugin_table_fields_are_redacted_in_every_format(tmp_path):
 
     forbidden = {
         "api_token",
+        "bundle-private-account",
+        "bundle-private-database",
+        "bundle-private-key",
+        "bundle-private-oauth",
+        "bundle-private-schema",
+        "bundle-private-server",
+        "bundle-private-warehouse",
+        "bundle-super-secret",
+        "ynvuzgxllwjhc2ljlxnly3jlda==",
+        "camel-connection-secret",
+        "camel-uri-secret",
         "column-secret",
+        "connectionurivalue",
         "manifest-secret",
         "metrics-secret",
         "methodology-secret",
@@ -303,7 +347,11 @@ def test_sensitive_plugin_table_fields_are_redacted_in_every_format(tmp_path):
         "password",
         "query-secret",
         "sql_query",
+        "serviceuri",
         "token",
+        "/private/bundle/input.csv",
+        "/private/bundle/root",
+        _runtime_sample("/", "users/private/bundle/source.csv"),
     }
     workbook = load_workbook(bundle.files["report.xlsx"], data_only=False)
     workbook_values = {
@@ -316,6 +364,34 @@ def test_sensitive_plugin_table_fields_are_redacted_in_every_format(tmp_path):
     workbook_text = "\n".join(sorted(workbook_values)).casefold()
     assert not any(value in workbook_text for value in forbidden)
     assert "[redacted]" in workbook_text
+    assert "accounting_method" in workbook_text
+    assert "daily_accrual" in workbook_text
+    assert "glide_path" in workbook_text
+    assert "linear" in workbook_text
+    assert "transition_path" in workbook_text
+    assert "staged" in workbook_text
+    assert "schema_version" in workbook_text
+    assert "2026.1" in workbook_text
+    assert "nested-linear" in workbook_text
+    assert "nested-staged" in workbook_text
+    assert "2026.2" in workbook_text
+    methodology_sheet = workbook["Methodology Parameters"]
+    methodology_keys = {
+        str(row[0])
+        for row in methodology_sheet.iter_rows(min_row=4, values_only=True)
+        if row[0] is not None
+    }
+    assert "account" not in methodology_keys
+    assert "file_path" not in methodology_keys
+    for private_key in (
+        "storage_settings.path",
+        "storage_settings.database",
+        "storage_settings.schema",
+        "storage_settings.server",
+        "storage_settings.warehouse",
+        "storage_settings.oauth",
+    ):
+        assert private_key not in methodology_keys
 
     summary_text = bundle.files["summary.json"].read_text(
         encoding="utf-8"
