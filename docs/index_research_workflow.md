@@ -1,303 +1,706 @@
 # ICAPA Index Research Workflow
 
-## Purpose
+## Purpose and boundary
 
-ICAPA separates index research into reusable stages:
+ICAPA is designed for researchers who construct, backtest, compare, and review
+indices. A methodology produces target weights at effective dates. The
+simulation layer then evolves those weights between effective dates using
+realized market data.
+
+ICAPA does not model orders, execution venues, bid-ask spreads, a live trading
+book, or real-time portfolio-manager positions.
 
 ```text
-Provider
-    -> canonical contract
-    -> external weight producer
-    -> cached target weights
-    -> simulation
-    -> analytics
-    -> report
+ResearchSpec / IndexRecipe
+    -> automatic identity and cache preflight
+    -> canonical provider snapshots and stage artifacts
+    -> effective-date target weights
+    -> effective-date simulation intervals
+       streamed and cached in calendar-month partitions
+    -> analytics plugins and baseline/candidate comparison
+    -> Excel + JSON + Parquet report bundle
 ```
 
-The backtester invokes an external weight producer for each review and collects
-its target weights. It is not a trade execution system. Daily returns, weight
-drift, rebalances, index levels, formal turnover, analytics, and reporting are
-separate downstream stages.
+`DataContext` remains the compatibility carrier used by existing construction
+code. It is not intended to become a production database or data lake.
 
-## Named workspaces and retention
+## Research specification
 
-A `workspace_name` gives one research project a stable on-disk location. The
-default root is:
+The high-level request is split into business definition and execution scope:
+
+- `IndexDefinition` contains the index ID, methodology or recipe, declared
+  rebalance frequency, base currency, and stable definition attributes.
+- `Calendar` contains the exact `reference_date` and `effective_date` pairs.
+- `ResearchSimulationSpec` contains realized market-data configuration, date
+  range, drift behavior, and materialization choices.
+- `AnalyticsSpec` selects a deterministic analytics profile and explicit return
+  series.
+- `CacheOptions` controls reusable artifacts without changing calculation
+  identity.
+- `ReportBundleSpec` optionally creates a deliverable from the completed run.
+- `recipe_providers` explicitly binds each native recipe capability to one
+  provider and its non-secret parameters.
+- `random_seed` optionally overrides the automatically derived recipe seed.
+- `label`, `tags`, and `ResearchStatus` support workspace review governance.
+
+```python
+from icapa import (
+    AnalyticsSpec,
+    CacheMode,
+    CacheOptions,
+    CacheStage,
+    Calendar,
+    IndexDefinition,
+    PriceReturnDrift,
+    RebalanceFrequency,
+    RebalancePhase,
+    ResearchSimulationSpec,
+    ResearchSpec,
+    ResearchWorkspace,
+    SimulationMaterialization,
+    SimulationParams,
+    WeightSnapshotMode,
+)
+
+calendar = Calendar.from_dates(
+    [
+        {
+            "reference_date": "2026-03-20",
+            "effective_date": "2026-04-01",
+        },
+        {
+            "reference_date": "2026-06-19",
+            "effective_date": "2026-07-01",
+        },
+    ]
+)
+
+spec = ResearchSpec(
+    definition=IndexDefinition(
+        index_id="RESEARCH_INDEX",
+        name="Research Index",
+        base_currency="USD",
+        methodology=recipe_or_methodology,
+        rebalance_frequency=RebalanceFrequency.QUARTERLY,
+    ),
+    calendar=calendar,
+    simulation=ResearchSimulationSpec(
+        market_data_provider_name="market_data",
+        provider_parameters={"dataset": "daily_returns"},
+        start_date="2026-04-01",
+        end_date="2026-12-31",
+        params=SimulationParams(
+            index_drift=PriceReturnDrift(),
+            benchmark_drift=PriceReturnDrift(),
+            rebalance_phase=RebalancePhase.OPEN,
+            materialization=SimulationMaterialization(
+                weight_snapshots=WeightSnapshotMode.NONE,
+                include_asset_returns=False,
+            ),
+        ),
+        segmented_cache=True,
+        streaming=True,
+    ),
+    analytics=AnalyticsSpec.standard_research(),
+    cache=CacheOptions(
+        mode=CacheMode.OFF,
+        stage_modes={
+            CacheStage.SOURCE_DATA: CacheMode.REUSE,
+            CacheStage.REVIEWS: CacheMode.REUSE,
+            CacheStage.SIMULATION: CacheMode.REUSE,
+            CacheStage.ANALYTICS: CacheMode.REUSE,
+        },
+    ),
+    label="baseline",
+    tags=("quarterly", "research"),
+)
+
+workspace = ResearchWorkspace.open("research_index_20260410")
+baseline = workspace.run(spec)
+```
+
+The provider and methodology objects in this example are deployment supplied.
+The public core contains no production credentials, SQL, schema, or private
+methodology implementation.
+
+## Automatic identity and run manifests
+
+Researchers do not enter a methodology version, source digest, provider adapter
+version, data snapshot ID, calendar revision, dependency digest, runtime
+version, or random seed merely to make a cache key.
+
+ICAPA records three related identities:
+
+| Identity | Scope | Main inputs |
+| --- | --- | --- |
+| `definition_fingerprint` | Stable index construction definition | Index definition, methodology/recipe/engine/solver/kernel identity, construction and review provider adapters, calendar provider/configuration, and construction runtime |
+| `request_fingerprint` | Exact requested calculation | Review pairs, schedule-validation controls, explicit random-seed override, simulation range/provider/drift/materialization, analytics profile, and execution components |
+| `result_fingerprint` | Actual completed result | Request fingerprint plus consumed input digests and immutable output artifact digests |
+
+The definition fingerprint intentionally excludes the requested review and
+simulation range. A shorter or longer request for the same construction
+definition can therefore reuse overlapping reviews, source partitions, and
+simulation coverage. Simulation-only providers, drift models, materialization,
+and simulator identity belong to the request and immutable simulation-segment
+keys, not the construction definition. The request fingerprint still
+distinguishes the exact calculation. Governance-only labels, tags, and status
+are stored in the manifest but deliberately excluded from calculation
+fingerprints.
+
+### Code and runtime identity
+
+For importable Python components, the identity collector records:
+
+- qualified component and distribution identity;
+- installed distribution version when available;
+- a cached digest of all installed Python files in that distribution;
+- source-file and local import-closure content digests;
+- Git commit metadata when the source is inside a repository;
+- actual source content, including dirty local files;
+- immutable component configuration;
+- Python, ICAPA, NumPy, Pandas, SciPy, PyArrow, and selected solver versions;
+- dependency-lock digest when a recognized lock/configuration file is present.
+
+A cacheable recipe stage also includes its implementation and reachable helper
+source, callable defaults, keyword defaults, closure or bound state,
+configuration, declared inputs, input artifact digests, relevant provider
+revisions, and declared review dimensions. Downstream recipe configuration is
+not inserted into an upstream content-stage key, so unchanged data and feature
+stages can be shared across parameter scenarios.
+
+A random stage declares `uses_randomness`. By default the high-level runner
+derives a deterministic seed from `definition_fingerprint` and records it.
+`ResearchSpec.random_seed` provides an explicit non-negative override. The seed
+enters only cache keys for stages that declare randomness; non-random upstream
+stages remain reusable.
+
+Dynamic notebook callables or opaque components that have no stable source
+identity may run with cache mode `OFF`. ICAPA does not use a class name as a
+false version. Any non-`OFF` calculation mode fails when executable identity
+cannot be proved. This is distinct from a source-verifiable provider that lacks
+a preflight snapshot token: that provider may be read and content-hashed before
+downstream reuse.
+
+### Data identity
+
+Data identity is automatic:
+
+- CSV and Excel adapters hash the source file bytes without storing the local
+  path in the manifest.
+- In-memory and pseudodata frames use a logical content digest covering values,
+  schema, dtypes, columns, and index metadata.
+- A provider may implement
+  `describe_snapshot(capability, request)` to expose a lightweight,
+  non-sensitive snapshot token before a data read.
+- A provider may expose `research_data_identity` when its identity service is
+  separate from data retrieval.
+- Without a preflight snapshot token, ICAPA reads and canonicalizes the data,
+  computes its content digest, and may persist the new object. That verified
+  content revision can then reuse downstream simulation work, but the provider
+  is read again on a later run to prove that its content is still unchanged.
+
+Provider-backed recipe stages declare a `ProviderRequestSpec` for each
+capability before review caching can be enabled. The declaration identifies
+the exact keyword request as provider-binding parameters plus explicitly
+selected review dimensions, such as `reference_date` and `effective_date`.
+This prevents a generic synthetic request from being used as evidence for a
+different custom-stage call. A dynamic provider request that cannot be
+declared remains available with cache mode `OFF`; non-`OFF` review caching
+fails clearly instead of trusting an approximate identity.
+
+Provider snapshot payloads are reduced to digests. Credentials, passwords,
+tokens, connection strings, hosts, SQL, query text, schemas, and user names are
+redacted or omitted from manifests and reports.
+
+Successful and failed named executions both receive a secret-safe
+`run_manifest.json`. A failed manifest records only the exception type and a
+safe message, not the provider exception body.
+
+## Named workspace and immutable storage
+
+The default root is:
 
 ```text
 ~/.icapa/workspaces
 ```
 
-Deployments may override only the root through `ICAPA_WORKSPACE_ROOT`. Individual
-callers cannot direct artifacts to arbitrary folders. A fingerprint derived
-from the index ID, external weight-producer identity, calculation parameters,
-provider labels, calendar semantics, and data revision creates an immutable run
-beneath the name:
+`ICAPA_WORKSPACE_ROOT` can change that deployment-wide root. A caller supplies a
+validated workspace name, not an arbitrary output path.
+
+The current physical layout is:
 
 ```text
-<workspace root>/
-  <workspace name>/
-    runs/
-      <calculation fingerprint>/
-        manifest.json
-        reviews/
-        artifacts/
-          simulation/
-          analytics/
-        reports/
+<workspace root>/<workspace name>/
+  catalog.sqlite
+  objects/
+    sha256/<prefix>/<content-digest>/<file-checksum>.parquet
+    metadata/...
+  bindings/<cache-stage>/<cache-key>/...
+  runs/<definition-fingerprint>/
+    executions/<execution-id>/run_manifest.json
+    reviews/
+    simulations/
+    analytics/
+    reports/<report-bundle-id>/
+  state/
+    invalidations/...
+    research_status/...
 ```
 
-Disk artifacts have no automatic expiry. They remain until an operator applies
-the deployment's explicit retention policy. This is deliberate: a completed
-research run should remain reproducible. The in-process cache lasts until the
-Python process exits or `clear_memory_cache()` is called.
+High-level v2 bundles use the per-definition `runs/.../reports/` location.
+The other per-definition stage directories are stable reference namespaces;
+content-addressed objects and reusable bindings remain normalized at workspace
+level so identical inputs can be shared across definitions without copying.
+The v1 workspace-root `reports/` path remains available to the direct
+reporting and workspace interfaces.
 
-`CachePolicy.REUSE` reads a valid memory or disk artifact and calculates only a
-missing review. `CachePolicy.REFRESH` recalculates requested reviews.
-`CachePolicy.READ_ONLY` fails if any requested artifact is absent.
+The SQLite catalog uses WAL transactions. Large tabular artifacts use
+content-addressed, ZSTD-compressed Parquet with logical-content and file-byte
+checksums. Manifests and compact metadata use checksummed JSON. Existing JSON
+workspace artifacts remain readable; new v2 tabular writes use Parquet.
 
-The requested overall backtest start and end dates are not part of a review
-cache key. Therefore:
+Objects are immutable. `REFRESH` creates or resolves a new immutable object and
+updates only its binding; it does not overwrite an old object. A checksum
+mismatch is corruption and is never accepted as a cache hit.
 
-- a shorter run reuses the overlapping review weights;
-- a longer run reuses existing reviews and calculates only the additional ones;
-- a changed weight-production parameter, provider configuration, index ID, or
-  data revision receives a different fingerprint;
-- corrupted or incomplete artifacts fail checksum validation and are not reused.
+`ResearchWorkspace` provides:
 
-Production adapters should provide a stable data revision or snapshot label.
-When a provider does not expose one, the run must be refreshed whenever its
-source data changes.
+- `list()`, `latest()`, `open_run()`, and `coverage()`;
+- labels, tags, and draft/in-review/approved/rejected/superseded status;
+- `verify()` for manifests and attached objects;
+- `invalidate()` to make a run inactive without deleting it;
+- `rebuild_catalog()` from checksummed manifests and sidecars;
+- `prune(dry_run=True)` to inspect unreferenced objects before explicit removal.
 
-## Underlying configuration
+There is no automatic expiry. Retention and pruning are explicit operational
+choices. Researchers can remove local artifacts, but a missing or damaged
+object will no longer be trusted.
 
-Underlying identifiers must not control behavior through hard-coded product
-codes or deployment-specific conditionals. An `UnderlyingProfile` contains the
-external settings for one coherent universe. An
-`UnderlyingMappingRegistry` maps an exact identifier or a prefix to that
-profile.
+## Cache modes and cache stages
 
 ```python
-from icapa.helpers import UnderlyingMappingRegistry, UnderlyingProfile
+from icapa import CacheMode, CacheOptions, CacheStage
 
-us_equity = UnderlyingProfile(
-    profile_name="us_equity_research",
-    universe_id="US_EQUITY_UNIVERSE",
-    universe_provider_name="universe_provider",
-    calendar_id="US",
-    calendar_provider_name="calendar_provider",
-    market_data_provider_name="market_data_provider",
-    base_currency="USD",
-    fx_provider_name="fx_provider",
-    tax_provider_name="tax_provider",
-    dividend_provider_name="dividend_provider",
-    universe_provider_parameters={"dataset": "broad_equity"},
-    calendar_provider_parameters={},
-    market_data_provider_parameters={},
-    simulation_parameters={
-        "base_value": 100.0,
-        "weight_drift": "price_return",
-        "dividend_treatment": "NYSE",
+cache = CacheOptions(
+    mode=CacheMode.OFF,
+    stage_modes={
+        CacheStage.SOURCE_DATA: CacheMode.REUSE,
+        CacheStage.REVIEWS: CacheMode.REUSE,
+        CacheStage.SIMULATION: CacheMode.REFRESH,
     },
 )
-
-mappings = UnderlyingMappingRegistry()
-mappings.register_prefix("US-EQUITY-", us_equity)
-mappings.register_exact("US-EQUITY-SPECIAL", us_equity)
-
-match = mappings.resolve_match("US-EQUITY-LARGE")
-assert match.profile.calendar_id == "US"
-assert match.profile.market_data_provider_name == "market_data_provider"
 ```
 
-Exact mappings take precedence over prefixes. Among prefixes, the longest match
-wins. The registry contains no built-in identifiers and no default profile.
-Unknown identifiers fail explicitly.
+| Mode | Read reusable artifacts | Calculate/provider read | Write reusable binding |
+| --- | --- | --- | --- |
+| `OFF` | No | Yes | No |
+| `REUSE` | Yes, after identity and checksum validation | Only missing or unverifiable work | Yes |
+| `REFRESH` | No | Yes | Yes, to immutable content |
+| `READ_ONLY` | Required | No provider method or calculation; local artifacts are verified | No |
 
-The provider names in a profile are deployment-controlled registry keys, not
-connection strings. Credentials, schemas, SQL, and physical field mappings stay
-inside provider adapters or deployment configuration. Optional FX, tax, or
-dividend providers may be omitted only when the canonical market-data provider
-already supplies the required adjusted observations.
+The high-level API defaults to `OFF`; it never silently forces a researcher
+to use cached calculations. A named workspace still writes its execution
+manifest and immutable result artifacts in `OFF` mode. Those result artifacts
+are lineage evidence, not reusable-cache claims.
 
-This replaces family-style enums with direct settings. If a deployment calls a
-calendar `US`, configure `calendar_id="US"`. If it uses another label, store
-that exact deployment label instead of adding a new hard-coded branch.
+Current reusable stages are:
 
-## Constructing and reusing review weights
+- `SOURCE_DATA`: canonical daily-market-data partitions plus verified monthly
+  coverage descriptors. Keys exclude the index, methodology, and scenario so
+  exact or containing partitions can be shared safely.
+- `REVIEWS`: verified effective-date results and persistent native recipe-stage
+  artifacts.
+- `SIMULATION`: immutable closed effective-date segments plus calendar-month
+  checkpoints for the open tail, assembled and sliced for each request.
+- `ANALYTICS`: complete plugin results identified from the analytics
+  specification, plugin-runner source, review contents, simulation contents,
+  and optional research inputs.
 
-The deployment supplies `weight_producer`. It must implement
-`execute(data_context)` and write a finite, non-negative `index_weight` that
-sums to one. The public core does not provide a concrete weight-production
-implementation.
+`ResearchWorkspace.run()` builds the `AnalyticsCacheIdentity` automatically and
+honors `OFF`, `REUSE`, `REFRESH`, and `READ_ONLY` for
+`CacheStage.ANALYTICS`. Analytics tables use immutable Parquet; compact
+result/specification/diagnostic metadata is committed last. The run manifest
+records the selected mode, the automatic analytics input digest, and whether
+the result came from calculation or the workspace.
+
+For source data, `READ_ONLY` requires a locally recorded provider snapshot
+identity so the correct partition key can be derived without calling the
+provider. It verifies every required source artifact before accepting a
+downstream simulation hit. With no snapshot protocol, `REUSE` calls the
+provider, canonicalizes and hashes the response, and can reuse simulation work
+identified by that content; it never assumes an older response is current.
+
+## IndexRecipe: standard execution without a standard algorithm
+
+`IndexRecipe` is an execution shell, not a fixed methodology. Its conceptual
+pipeline is:
+
+```text
+Data requirements
+    -> Transform
+    -> Eligibility
+    -> Selection
+    -> Weighting or optimization
+    -> Constraints
+    -> Validation
+    -> canonical index_weight
+```
+
+The recipe compiles to a directed acyclic graph. Each `IndexStage` declares:
+
+- namespaced input and output artifacts;
+- immutable canonical configuration;
+- implementation version and source identity;
+- current-review and previous-review requirements;
+- provider capabilities;
+- cache scope (`CONTENT`, `RECIPE`, `RUN`, or `DISABLED`);
+- determinism, randomness, side-effect class, and parallel-safety properties;
+- diagnostics and final artifact schema.
+
+The graph derives dependencies from artifact flow in addition to explicit
+ordering. It rejects duplicate producers, missing inputs, cycles, undeclared
+outputs, and invalid final weights.
+
+Researchers have five extension levels:
+
+1. Compose reusable standard stages.
+2. Implement an arbitrary custom Python `IndexStage`.
+3. Expose a private composite stage while hiding its internal graph.
+4. Use one monolithic custom stage that directly produces target weights.
+5. Wrap an `execute(DataContext)` methodology with
+   `IndexRecipe.from_methodology(methodology)`.
+
+The only universal construction contract is a finite, non-negative
+`index_weight` indexed by `instrument_id` and summing to one within tolerance.
+Custom methodologies do not have to use a standard scorer, selector, or
+optimizer.
+
+### Previous-review state
+
+A stage can explicitly request previous target weights, membership, ranks, or
+private state through namespaced artifacts. When a stateful sequence starts in
+the middle, the caller must provide a valid previous state, replay earlier
+reviews, or resolve a cached seed. Missing required state fails explicitly; the
+requested start is never treated silently as the first historical review.
+
+## Review schedule and rebalance frequency
+
+Every review contains:
+
+- `reference_date`: the point-in-time information cutoff used to construct
+  target weights;
+- `effective_date`: the date on which those target weights begin to apply.
+
+Daily realized observations use `business_date`.
+
+The explicit effective-date schedule is authoritative.
+`RebalanceFrequency.WEEKLY`, `MONTHLY`, `QUARTERLY`, `SEMI_ANNUAL`, `ANNUAL`,
+or `CUSTOM` is definition metadata and a defensive validation rule. The
+current validator rejects multiple effective dates in the same declared
+frequency period. It does not invent missing reviews or replace manually
+adjusted holiday dates.
+
+`Calendar.from_frequency(...)` is an explicit convenience for generating a
+schedule. Production deployments should pass their own business-day calendar.
+`Calendar.from_dates(...)` supports manual, CSV, and Excel schedules.
+
+## Target weights and daily simulation
+
+Construction and drift are deliberately separate:
+
+```text
+methodology or recipe
+    -> target weights on effective_date
+
+simulation
+    -> daily opening weights
+    -> realized return
+    -> closing-weight drift
+    -> next effective-date rebalance
+```
+
+The simulator treats each interval as:
+
+```text
+[effective_i, effective_i+1)
+final interval = [effective_last, requested_end]
+```
+
+It can start inside an interval by locating the most recent effective target
+and reconstructing or reusing its continuation state. It never treats the
+requested start date as a new rebalance.
+
+### Streaming and segmented reuse
+
+`ResearchSimulationSpec.streaming` defaults to `True`. The simulator loads one
+calendar-month market-data partition at a time, validates it, advances a
+compact continuation checkpoint, and releases the partition before loading the
+next one. Source partitions are independently content-addressed and can be
+shared across parameter scenarios.
+
+Closed holding periods are stored as immutable
+`[effective_i, effective_i+1)` segments. The still-open final holding period is
+checkpointed by calendar month. Segment identity covers target checksums,
+market-data partition lineage, business-day identity, simulator and drift
+implementation, runtime/dependency identity, and calculation parameters other
+than `base_value`.
+
+This supports:
+
+- warm assembly from already verified effective-period segments;
+- shorter-range reuse without a provider call; when the requested end falls
+  inside a cached segment, only the exact ending checkpoint is replayed from
+  the shared source Parquet rather than persisting daily constituent weights;
+- extension by calculating only missing closed periods or open-tail months;
+- assembly-time rebasing, so changing `base_value` does not recalculate daily
+  return factors.
+
+Existing whole-range result archives remain readable, but segmented research
+writes do not depend on one monolithic cached range.
+
+A checkpoint contains the ending business date, index and benchmark weights,
+return-level state, and the prior observations required by a drift strategy.
+Absolute index level is a presentation choice; cached return factors remain the
+calculation identity.
+
+### Drift strategies
+
+Index and benchmark drift are configured independently:
 
 ```python
-from icapa.backtesting import Backtester, Calendar
-from icapa.workspace import CachePolicy
-
-calendar = Calendar(
-    start_date="2026-01-01",
-    end_date="2026-12-31",
-    calendar_id=match.profile.calendar_id,
-    provider_name=match.profile.calendar_provider_name,
-    provider_parameters=dict(match.profile.calendar_provider_parameters),
+SimulationParams(
+    index_drift=PriceReturnDrift(),
+    benchmark_drift=RelativeCapitalizationDrift(),
+    rebalance_phase=RebalancePhase.OPEN,
 )
+```
 
-backtester = Backtester(
-    index_id="RESEARCH_INDEX",
-    calendar=calendar,
-    methodology=weight_producer,
-    workspace_name="research_workspace_20260410",
-    data_revision="review-snapshot-2026-04-10",
-    cache_policy=CachePolicy.REUSE,
+| Strategy | Calculation | Intended use |
+| --- | --- | --- |
+| `PriceReturnDrift` | `normalize(w_open * (1 + price_return))` | Any target-weight methodology |
+| `CapitalizationDrift` | `normalize(current adjusted market_cap)` | A genuinely capitalization-weighted target |
+| `RelativeCapitalizationDrift` | `normalize(w_open * cap_t / cap_t-1)` | Preserve a non-cap target while drifting by capitalization change |
+
+`CapitalizationDrift` validates the effective-date target against normalized
+capitalization and fails if it would erase a tilt. No drift strategy silently
+falls back to another. `WeightDrift.PRICE_RETURN` remains available to direct
+low-level simulations. Absolute `WeightDrift.MARKET_CAP` behavior is isolated
+for persisted-result replay; high-level research selects an explicit strategy.
+
+`DividendTreatment.STANDARD` and `DividendTreatment.ALTERNATIVE` are the
+provider-neutral calculation variants. Dividend data provenance is configured
+separately.
+
+`RebalancePhase.OPEN` applies the target before that business date's return.
+`RebalancePhase.CLOSE` applies it after the return. Non-business effective dates
+follow the selected `RebalanceTiming`.
+
+### Materialization
+
+```python
+SimulationMaterialization(
+    weight_snapshots=WeightSnapshotMode.NONE,
+    include_asset_returns=False,
 )
-backtest_result = backtester.run()
 ```
 
-Each `effective_date` produces one canonical constituent frame with
-`index_weight`. `backtest_result.metadata.reviews` records whether each review
-was computed, read from process memory, or read from disk. Reusing the same name
-and calculation fingerprint with another calendar range reuses the overlapping
-reviews.
+| Mode | Materialized constituent weights |
+| --- | --- |
+| `NONE` | No public constituent-weight table; daily index series, rebalance events, and internal checkpoint remain |
+| `REBALANCE` | Effective-date pre-rebalance, target, and end-of-day snapshots |
+| `DAILY` | Full daily opening and closing holdings for detailed analysis |
 
-## Daily index simulation
+`IndexSimulationResult.holdings` retains its stable schema. Explicit
+rebalance lifecycle weights are available through
+`rebalance_weight_snapshots`. The high-level research default is `NONE`, so
+default persisted size does not grow with
+`instrument_count * business_date_count`.
 
-`IndexSimulator` consumes the completed review weights and realized canonical
-market data. It does not rerun the external weight producer.
+The simulator calculates price, gross-total, and net-total index and benchmark
+returns, levels, active returns, and formal one-way rebalance turnover.
+Corporate actions, currency conversion, tax treatment, and dividend inputs must
+already be correct in the canonical daily market data.
+
+### Defensive calendar checks
+
+When a provider supplies explicit business days, ICAPA validates coverage.
+Otherwise it checks actual date ordering, duplicates, effective-date mapping,
+and missing observations for held instruments. These are conservative
+defenses; they do not require a specific provider database schema.
+
+## Optimization extension
+
+The direct low-level API remains:
+
+```text
+objective callable
+    + linear/nonlinear constraints
+    + OptimizationProblem
+    + PortfolioSolver
+    -> OptimizationResult
+```
+
+`ScipySLSQPSolver` continues to support nonlinear and custom objectives. The
+additive model layer provides:
+
+- `WeightVariableSpec` for ordered instruments, warm start, investment level,
+  and asymmetric per-instrument bounds;
+- `PortfolioModelSpec` for compiling canonical constituent fields into
+  instrument, country/industry/issuer group, numeric exposure, liquidity,
+  turnover, and tracking-error constraints;
+- `OptimizationModelSpec` for an inspectable objective and linear/nonlinear
+  constraints;
+- squared-distance, linear, and minimum-variance objective specifications;
+- reusable group, turnover, tracking-error, and general constraint builders;
+- `SolverRouter`, which checks declared capabilities and uses one explicitly
+  selected backend without silent fallback;
+- optional sparse `OSQPBackend` for compatible convex linear/quadratic models;
+- phase-one linear feasibility analysis;
+- requested, achieved, slack, binding, and violation diagnostics for every
+  bound and constraint.
+
+`GroupWeightConstraintSpec`, `FieldExposureConstraintSpec`, and
+`LiquidityConstraintSpec` provide the field-level configuration for those
+models. They compile into the general linear/nonlinear contracts without
+changing a solver. Unsupported backend capabilities fail before solve; ICAPA
+does not rewrite the model silently.
+
+Minimum-variance research uses `ReturnWindowSpec` with any public
+`CovarianceEstimator`:
+
+- `SampleCovarianceEstimator` provides pairwise or complete-case sample
+  covariance with an explicit numerical ridge and PSD policy;
+- `ShrinkageCovarianceEstimator` applies an explicit deterministic intensity
+  toward either the sample diagonal or a scaled identity target;
+- `FactorCovarianceEstimator` builds a deterministic statistical factor model
+  from principal covariance components and diagonal specific risk.
+
+All three return the same validated `CovarianceEstimate` contract. The
+estimator type, immutable configuration, resolved point-in-time window, input
+returns, covariance output, and diagnostics can therefore be identified and
+cached by the same recipe stage. Shrinkage and factor estimators add no runtime
+dependency beyond NumPy and Pandas.
+
+Install the optional sparse backend with:
+
+```bash
+python -m pip install -e '.[qp]'
+```
+
+## Analytics plugins
+
+The existing `AnalyticsEngine` and `AnalyticsResult` remain unchanged.
+`AnalyticsPluginRunner` wraps that parity result and adds versioned,
+read-only research modules.
+
+`AnalyticsWorkspaceCache` is the reusable storage contract behind high-level
+analytics execution. It can also wrap an explicit zero-argument analytics
+calculation with `OFF`, `REUSE`, `REFRESH`, or `READ_ONLY` behavior. Its
+outcome includes the cache source and immutable artifact references.
+
+`AnalyticsSpec.standard_research()` includes:
+
+- review validation and v1 summary statistics;
+- entrants, exits, and membership stability;
+- selection and exclusion reasons when supplied;
+- weight-change contributors and turnover decomposition;
+- requested versus achieved targets;
+- constraint binding, slack, and violations;
+- factor and signal exposure;
+- liquidity and capacity coverage;
+- calendar-period and rolling performance/risk;
+- drawdown duration and recovery;
+- data coverage, missingness, and point-in-time freshness;
+- multi-period attribution when required inputs are available;
+- methodology diagnostics.
+
+Optional unavailable inputs produce structured skip diagnostics by default.
+They do not cause the plugin runner to invent data. `ReturnSeries` is explicit;
+the standard default is `NET_TOTAL`. Adding another return column never changes
+the analysis basis silently.
+
+Analytics consumes completed backtest and simulation results. It does not load
+providers, change target weights, or render reports.
+
+## Baseline and candidate comparison
 
 ```python
-from icapa.backtesting import IndexSimulator, SimulationParams
-
-simulation = IndexSimulator(
-    backtest_result=backtest_result,
-    market_data_provider_name=match.profile.market_data_provider_name,
-    provider_parameters=dict(match.profile.market_data_provider_parameters),
-    start_date="2026-01-20",
-    end_date="2026-12-31",
-    data_revision="daily-market-snapshot-2027-01-05",
-    workspace=backtester.workspace_store,
-    params=SimulationParams(**dict(match.profile.simulation_parameters)),
-).run()
+candidate = workspace.run(candidate_spec)
+comparison = workspace.compare(
+    baseline=baseline,
+    candidates=[candidate],
+)
 ```
 
-The simulator:
+Comparison checks lineage compatibility, aligns common effective and business
+dates, and aligns the union of constituents with absent weights set to zero.
+It reports:
 
-- applies target weights on `effective_date`, or on the next observed business
-  day when configured;
-- drifts index and benchmark weights between reviews;
-- calculates price, gross-total, and net-total returns and levels;
-- simulates the benchmark with its own review weights;
-- calculates formal one-way turnover from pre-trade drifted weights to new
-  targets;
-- records daily opening and closing weights for analysis;
-- stores a range-specific simulation artifact when a workspace and explicit
-  data revision are supplied.
+- parameter and lineage differences;
+- review coverage;
+- constituent additions and removals;
+- weight differences;
+- exposure, performance, turnover, and validation differences.
 
-`WeightDrift.PRICE_RETURN` is the default. `WeightDrift.MARKET_CAP` is available
-when reliable daily market capitalization is supplied. Corporate-action
-adjustments, currency conversion, tax treatment, and dividend inputs must
-already be represented correctly in the canonical daily market data.
-
-The simulator is intended for index research. It does not model order routing,
-bid-ask spreads, execution slippage, or a portfolio manager's trading book.
-
-## Analytics
-
-```python
-from icapa.analytics import analyze_backtest
-
-analytics = analyze_backtest(backtest_result, simulation)
-```
-
-The provider-neutral analytics layer includes:
-
-- review weight validation;
-- constituent count, maximum weight, top-10 weight, HHI, effective N, and
-  active share;
-- country and industry portfolio, benchmark, and active exposures;
-- adjacent target-review weight change;
-- formal simulation turnover as a separate measure;
-- annualized performance, volatility, drawdown, tracking error, and information
-  ratio from daily index and benchmark returns;
-- optional Brinson-Fachler attribution from explicitly supplied, point-in-time
-  aligned inputs.
-
-Analytics never loads providers, changes target weights, writes a workspace, or
-renders a report.
+Comparison uses completed runs and does not rerun construction or simulation.
 
 ## Reporting
 
-```python
-from icapa.reporting import write_index_research_report
+The Excel v1 renderer, template, worksheets, fields, and integrity checks remain
+available. The v2 writer creates one atomic directory:
 
-report_path = write_index_research_report(
-    backtester.workspace_store,
-    backtest_result,
-    filename="index_research_report",
-    simulation=simulation,
-    analytics=analytics,
-    data_sources=[
-        {
-            "capability": "universe",
-            "provider_name": match.profile.universe_provider_name,
-            "data_type": "canonical_universe",
-            "fields": ["instrument_id", "benchmark_weight"],
-        },
-        {
-            "capability": "daily_market_data",
-            "provider_name": match.profile.market_data_provider_name,
-            "data_type": "canonical_daily_market_data",
-            "fields": ["price_return", "gross_dividend", "net_dividend"],
-        },
-    ],
+```text
+<bundle-id>/
+  report.xlsx
+  summary.json
+  manifest.json
+  checksums.json
+  tables/*.parquet
+```
+
+The default v2 bundle keeps complete tabular outputs in Parquet and appends
+research sheets to the v1 workbook, including Research Summary, Calendar
+Periods, Rolling Metrics, Constituent Changes, Constraint Diagnostics, Data
+Coverage, Run Manifest, and optional Comparison sheets.
+
+Tables beyond Excel's row limit are split deterministically across worksheets.
+Parquet remains the complete machine-readable source. The writer blocks formula
+injection and external workbook links, filters sensitive manifest fields, and
+never serializes credentials or connection details.
+
+```python
+comparison = workspace.compare(baseline, [candidate])
+bundle = workspace.write_report(
+    candidate,
+    comparison=comparison,
 )
 ```
 
-Reports can be written only under the fingerprinted workspace's `reports/`
-directory. The fixed template contains:
+## Stable lower-level contracts
 
-- Overview
-- Review Schedule
-- Latest Holdings
-- All Review Weights
-- Performance
-- Exposures
-- Turnover
-- Attribution
-- Methodology Parameters
-- Data Sources
-- Validation
+The high-level research workflow composes, rather than replaces, these
+lower-level contracts:
 
-Optional sections state `Not available` when their required inputs are absent.
-The report adapter uses field allowlists, blocks formula injection and external
-workbook links, and never serializes provider parameters, credentials, or
-simulation-private metadata.
+- direct `Backtester` and `WorkspaceStore`;
+- direct `IndexSimulator`, drift configuration, daily holdings, and simulation
+  result fields;
+- existing JSON review and simulation cache reading;
+- `AnalyticsEngine`, `AnalyticsResult`, and `analyze_backtest`;
+- Excel v1 template and `write_index_research_report`;
+- existing `execute(DataContext)` methodologies through direct use or
+  `IndexRecipe.from_methodology`.
 
-## Generic optimisation contracts
-
-The public `portfolio_construction` package separates optimisation into:
-
-```text
-objective builder
-    + linear/nonlinear constraint specifications
-    + OptimizationProblem
-    + PortfolioSolver
-    -> verified OptimizationResult
-```
-
-The default solver is `ScipySLSQPSolver`. An external weight producer may inject
-a `PortfolioSolver` or provide another solver without changing data loading.
-Reusable builders cover weight bounds, group constraints, turnover, tracking
-error, distance objectives, and covariance-based objectives. Every solver
-result includes an objective value, iteration count, message, and maximum
-verified constraint violation.
+`ResearchWorkspace` composes these interfaces. A private methodology may
+remain opaque as long as it emits the canonical target-weight contract.
 
 ## Public extension boundary
 
-`portfolio_construction` contains the generic optimisation contracts described
-above plus empty extension placeholders. The private implementation folders
-`portfolio_construction/methodologies/` and
-`portfolio_construction/rules/engines/` intentionally contain only `.gitkeep`
-in the public repository. Deployments connect their external weight producer
-without changing the provider, cache, simulation, analytics, or report
-contracts.
+The public package contains provider contracts, recipes, optimization
+interfaces, workspaces, simulation, analytics, comparison, and reporting.
+Private methodology and engine implementations are supplied by a deployment
+outside the public repository. They can remain opaque while still emitting
+canonical target weights and safe diagnostics.
+
+For data fields, date semantics, provider capabilities, and adapter design, see
+[the data-loading guide](data_loading_guide.md). For reproducible performance
+measurement, see [the scale-suite guide](performance_scale_suite.md).

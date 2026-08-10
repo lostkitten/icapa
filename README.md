@@ -2,62 +2,47 @@
 
 <img src="assets/icapa.png" alt="ICAPA" width="360">
 
-ICAPA is provider-neutral infrastructure for index research, simulation,
-portfolio analytics, and reporting. Database access is isolated behind explicit
-provider interfaces, while target weights are supplied by an external
-weight-production component:
+ICAPA is a provider-neutral platform for index construction research. It
+creates effective-date target weights, simulates their daily evolution,
+analyzes and compares research candidates, and writes review-ready
+deliverables. It is not an order-management, execution, or portfolio-manager
+book system.
+
+## Research pipeline
 
 ```text
-Provider
-  -> canonical contract
-  -> external weight producer
-  -> cached target weights
-  -> simulation
-  -> analytics
-  -> report
+ResearchSpec / IndexRecipe
+    -> canonical provider data and automatic snapshot identity
+    -> effective-date target weights
+    -> segmented daily index simulation
+    -> analytics and baseline/candidate comparison
+    -> Excel, JSON, and Parquet deliverables
 ```
 
-FactSet and Snowflake are the two public integration examples. Both are
-unconfigured placeholders. CSV and Excel files are supported through a generic
-provider-neutral loader for controlled ad-hoc inputs. The package contains no
-default credentials, queries, schemas, production datasets, or implicit
-provider fallback.
+Researchers supply methodology logic, parameters, providers, dates, and cache
+policy. ICAPA automatically records executable source identity, provider
+adapter identity, data snapshot evidence, runtime versions, request identity,
+and immutable output checksums.
 
-## Structure
+## Package map
 
 | Package | Responsibility |
 | --- | --- |
-| `data_sources` | Provider interfaces, registry, canonical contracts, FactSet/Snowflake examples, and generic file loading |
-| `portfolio_construction` | Generic optimisation contracts, objectives, constraints, solver interfaces, and empty private-extension placeholders |
-| `backtesting` | Review calendars, external weight-producer orchestration, cached target weights, and stateful daily index simulation |
-| `workspace` | Fixed-root memory and disk artifacts with fingerprints, checksums, and cache policies |
-| `helpers` | Explicit underlying-profile and identifier-mapping configuration |
-| `analytics` | Review statistics, exposures, performance, drawdown, turnover, and optional attribution |
-| `reporting` | Safe report payloads, a fixed Excel template, and workspace-confined rendering |
-| `tools` | The lightweight `DataContext`, enums, and deterministic return utilities |
+| `data_sources` | Canonical data contracts, provider protocols, explicit registration, universe profiles, and data services |
+| `portfolio_construction` | Review context, methodologies, engines, rules, recipes, constraints, and optimization |
+| `backtesting` | Calendars, review orchestration, drift, effective-date segments, and daily index simulation |
+| `analytics` | Performance, constituents, exposures, attribution, risk, events, regimes, comparisons, reconciliation, and data quality |
+| `workspace` | Automatic identity, manifests, catalog, immutable artifacts, typed caches, and persisted-format readers |
+| `research` | User-facing workspace, specifications, results, batch runs, scenarios, sensitivity, and notebook presentation |
+| `reporting` | Report contracts, builders, Excel rendering, dashboards, templates, and multi-format bundles |
 
-## Public extension boundary
+There is no generic `tools` or `helpers` package. Code belongs to the domain
+that defines its behavior.
 
-The public repository does not distribute private portfolio-construction
-implementations. The private extension folders under
-`portfolio_construction/methodologies/` and
-`portfolio_construction/rules/engines/` intentionally contain only `.gitkeep`.
-Deployments provide an external weight producer that consumes canonical data
-and writes `index_weight`. The public core then validates, caches, simulates,
-analyses, and reports those weights.
+See [Architecture](docs/architecture.md) for the dependency rules, extension
+points, and end-to-end data flow.
 
-Named workspaces are stored under `~/.icapa/workspaces` by default. The root can
-be changed only with `ICAPA_WORKSPACE_ROOT`. Overlapping reviews are reused when
-the same index definition is rerun for a shorter or longer date range; only
-missing reviews are calculated.
-
-The [data-loading guide](docs/data_loading_guide.md) defines canonical fields,
-date semantics, provider capabilities, and integration parameters. The
-[index research workflow](docs/index_research_workflow.md) explains workspace
-retention, configurable underlying mappings, review-weight reuse, daily
-simulation, analytics, optimisation extension points, and report generation.
-
-## Installation
+## Quick start
 
 ICAPA requires Python 3.12.
 
@@ -65,21 +50,65 @@ ICAPA requires Python 3.12.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e '.[dev]'
-```
-
-## Offline demonstrations and smoke tests
-
-The public-core tests run offline with generated data:
-
-```bash
+python -m pip install -e '.[dev,qp]'
 pytest -q
 ```
 
-Integration code should test its external weight producer separately, then run
-the public pipeline against synthetic canonical inputs before connecting
-controlled data.
+The primary API is the research workspace:
+
+```python
+from icapa.research import ResearchSpec, ResearchWorkspace
+
+# `spec` references a deployment-supplied methodology or IndexRecipe,
+# explicit providers, review dates, simulation settings, and analytics.
+workspace = ResearchWorkspace.open("example_workspace")
+run = workspace.run(spec)
+```
+
+Named workspaces live under `~/.icapa/workspaces/<workspace-name>` by default.
+Deployments may set `ICAPA_WORKSPACE_ROOT` to select one controlled root.
+Researchers choose whether reusable artifacts are disabled, reused, refreshed,
+or read-only.
+
+## Optional research features
+
+```bash
+python -m pip install -e '.[analytics]'
+python -m pip install -e '.[explainability]'
+python -m pip install -e '.[notebook]'
+```
+
+Optional packages are imported only when their feature is requested. Missing
+optional dependencies produce an actionable error and never change the chosen
+calculation silently.
+
+## Private construction implementations
+
+Public distributions include construction contracts and extension interfaces,
+but do not distribute deployment-specific methodology, engine, or selected
+processing implementations. Development checkouts can supply private modules
+under:
+
+```text
+portfolio_construction/methodologies/
+portfolio_construction/engines/
+portfolio_construction/rules/data_processing/
+```
+
+The build and repository guards enforce this boundary.
+
+## Data and reports
+
+The [data-loading guide](docs/data_loading_guide.md) defines canonical fields,
+date semantics, provider capabilities, and adapter parameters. The
+[research workflow guide](docs/index_research_workflow.md) explains automatic
+identity, cache control, simulation, analytics, comparison, and reporting.
+
+Excel v1 output remains available for established report workflows. The
+current report bundle adds sanitized JSON metadata and complete Parquet tables.
+Large tables are split deterministically in Excel rather than silently
+truncated.
 
 ## License
 
-The public ICAPA core is available under the MIT License.
+ICAPA is available under the MIT License.

@@ -10,7 +10,7 @@ from icapa.backtesting import (
     SimulationParams,
 )
 from icapa.data_sources import register_provider
-from icapa.tools.container import DataContext
+from icapa.portfolio_construction.context import DataContext
 from icapa.workspace import WorkspaceStore
 
 

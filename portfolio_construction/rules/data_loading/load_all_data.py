@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from icapa.portfolio_construction.rules.data_loading.base import DataLoadingRule
-from icapa.portfolio_construction.rules.data_loading.add_underlying_index import AddUnderlyingIndex
+from icapa.portfolio_construction.rules.data_loading.load_universe import LoadUniverse
 
 
 @dataclass
@@ -13,17 +13,23 @@ class LoadAllData(DataLoadingRule):
     data rules must be supplied explicitly; no dataset is inferred.
     """
 
-    universe: AddUnderlyingIndex | None = None
+    universe: LoadUniverse | None = None
     commands: List[DataLoadingRule] = field(default_factory=list)
     command: str = "LoadAllData"
 
-    def get_output_fact_names(self):
+    def get_output_field_names(self):
         rules = ([self.universe] if self.universe else []) + list(self.commands)
-        return sorted({column for rule in rules for column in rule.get_output_fact_names()})
+        return sorted(
+            {
+                column
+                for rule in rules
+                for column in rule.get_output_field_names()
+            }
+        )
 
     def execute(self, data_context):
         if self.universe is None:
-            raise ValueError("LoadAllData requires an explicit AddUnderlyingIndex rule")
+            raise ValueError("LoadAllData requires an explicit LoadUniverse rule")
         result = self.universe.execute(data_context)
         for rule in self.commands:
             result = rule.execute(result)

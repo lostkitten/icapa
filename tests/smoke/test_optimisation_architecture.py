@@ -1,4 +1,4 @@
-"""Smoke tests for solver-independent optimisation contracts."""
+"""Smoke tests for solver-independent optimization contracts."""
 
 import numpy as np
 import pytest

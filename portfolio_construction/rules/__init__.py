@@ -6,10 +6,10 @@ from .data_loading import (
     AddIndexMemberships,
     AddReturns,
     AddThirdPartyData,
-    AddUnderlyingIndex,
     ApplyExclusions,
     ImportData,
     LoadAllData,
+    LoadUniverse,
 )
 
 __all__ = [
@@ -18,8 +18,8 @@ __all__ = [
     "AddIndexMemberships",
     "AddReturns",
     "AddThirdPartyData",
-    "AddUnderlyingIndex",
     "ApplyExclusions",
     "ImportData",
     "LoadAllData",
+    "LoadUniverse",
 ]

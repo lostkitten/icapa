@@ -1,6 +1,8 @@
 """Focused smoke tests for the safe, workspace-confined report layer."""
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -8,8 +10,8 @@ import pandas as pd
 import pytest
 
 from icapa.analytics import BrinsonInput, analyze_backtest
-from icapa.backtesting.backtester import BacktestResult
-from icapa.backtesting.simulator import IndexSimulationResult
+from icapa.backtesting.reviews import BacktestResult
+from icapa.backtesting.simulation import IndexSimulationResult
 from icapa.reporting import (
     ExcelReportRenderer,
     ReportDataError,
@@ -18,11 +20,14 @@ from icapa.reporting import (
     validate_report_filename,
     write_index_research_report,
 )
-from icapa.tools.container import DataContext
+from icapa.portfolio_construction.context import DataContext
 
 
 FIRST_EFFECTIVE_DATE = pd.Timestamp("2026-03-23")
 SECOND_EFFECTIVE_DATE = pd.Timestamp("2026-06-22")
+EXCEL_V1_SEMANTIC_GOLDEN = (
+    "8b6be46c013774f1d3e87d0153ff7a923a421c0b195ff739cf4137365cbe77e7"
+)
 
 
 def _context(
@@ -264,6 +269,68 @@ def test_renderer_validates_template_and_marks_unavailable_sections(tmp_path):
     assert workbook["Exposures"]["A4"].value == "Not available"
     assert workbook["Latest Holdings"]["B4"].value == "'=unsafe formula text"
     assert not getattr(workbook, "_external_links", ())
+
+
+def test_excel_v1_semantic_golden_output_is_unchanged(tmp_path):
+    """Freeze the v1 workbook contract without relying on ZIP timestamps."""
+
+    destination = tmp_path / "v1-golden.xlsx"
+    ExcelReportRenderer().render(_payload(), destination)
+    workbook = load_workbook(
+        destination,
+        data_only=False,
+        keep_links=True,
+    )
+    sheets = []
+    for sheet in workbook.worksheets:
+        cells = []
+        for row in sheet.iter_rows():
+            for cell in row:
+                if cell.value is None:
+                    continue
+                value = (
+                    cell.value.isoformat()
+                    if hasattr(cell.value, "isoformat")
+                    else cell.value
+                )
+                cells.append(
+                    [
+                        cell.coordinate,
+                        value,
+                        cell.data_type,
+                        cell.number_format,
+                    ]
+                )
+        sheets.append(
+            {
+                "title": sheet.title,
+                "state": sheet.sheet_state,
+                "freeze": str(sheet.freeze_panes or ""),
+                "auto_filter": sheet.auto_filter.ref,
+                "merged": sorted(
+                    str(item) for item in sheet.merged_cells.ranges
+                ),
+                "cells": cells,
+            }
+        )
+    semantic_output = {
+        "sheetnames": workbook.sheetnames,
+        "sheets": sheets,
+        "defined_names": sorted(
+            str(item) for item in workbook.defined_names.values()
+        ),
+    }
+    canonical = json.dumps(
+        semantic_output,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+
+    assert sha256(canonical.encode("utf-8")).hexdigest() == (
+        EXCEL_V1_SEMANTIC_GOLDEN
+    )
 
 
 @dataclass

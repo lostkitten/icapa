@@ -1,0 +1,14 @@
+include LICENSE
+include README.md
+include assets/icapa.png
+include reporting/templates/index_research_report.xlsx
+
+exclude demo.py
+prune portfolio_construction/methodologies
+prune portfolio_construction/engines
+prune portfolio_construction/rules/data_processing
+prune build
+prune dist
+global-exclude .DS_Store
+global-exclude __pycache__
+global-exclude *.py[cod]

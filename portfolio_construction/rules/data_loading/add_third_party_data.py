@@ -7,9 +7,10 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from icapa.data_sources.contracts import require_columns
-from icapa.data_sources.registry import registry
+from icapa.data_sources.providers.registry import registry
+from icapa.data_sources.provenance import automatic_data_identity
 from icapa.portfolio_construction.rules.data_loading.base import DataLoadingRule
-from icapa.tools.enums.data_loading import ThirdPartyDataType
+from icapa.data_sources.contracts import ThirdPartyDataType
 
 
 @dataclass
@@ -50,7 +51,7 @@ class AddThirdPartyData(DataLoadingRule):
                 f"fields must not replace canonical key/date columns: {sorted(overlap)}"
             )
 
-    def get_output_fact_names(self):
+    def get_output_field_names(self):
         return list(self.fields)
 
     def execute(self, data_context):
@@ -89,6 +90,21 @@ class AddThirdPartyData(DataLoadingRule):
             raise ValueError(
                 f"{self.data_type.value} contains instruments outside the universe"
             )
+        data_context.provenance.record_provider_call(
+            automatic_data_identity(
+                provider_name=self.provider_name,
+                provider=provider,
+                capability="load_third_party_data",
+                request={
+                    "data_type": self.data_type.value,
+                    "fields": tuple(self.fields),
+                    "reference_date": data_context.reference_date,
+                    **self.provider_parameters,
+                },
+                frame=facts,
+                sort_by=["instrument_id"],
+            )
+        )
         current = current.join(facts[self.fields], how="left")
         data_context.set_dataframe(current, columns=self.fields)
         return data_context

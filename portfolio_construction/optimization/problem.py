@@ -1,4 +1,4 @@
-"""Solver-independent optimisation contracts."""
+"""Solver-independent optimization contracts."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class OptimizationProblem:
     linear_constraints: Sequence[LinearConstraintSpec] = field(default_factory=tuple)
     nonlinear_constraints: Sequence[NonlinearConstraintSpec] = field(default_factory=tuple)
     investment_level: float = 1.0
-    name: str = "portfolio_optimisation"
+    name: str = "portfolio_optimization"
 
 
 @dataclass(frozen=True)

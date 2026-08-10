@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from typing import List
 
-from icapa.data_sources.registry import registry
+from icapa.data_sources.providers.registry import registry
+from icapa.data_sources.provenance import automatic_data_identity
 from icapa.portfolio_construction.rules.data_loading.base import DataLoadingRule
 
 
@@ -23,7 +24,7 @@ class AddIndexMemberships(DataLoadingRule):
         if len(set(self.indices)) != len(self.indices):
             raise ValueError("indices must not contain duplicates")
 
-    def get_output_fact_names(self):
+    def get_output_field_names(self):
         return list(self.indices)
 
     def execute(self, data_context):
@@ -46,7 +47,22 @@ class AddIndexMemberships(DataLoadingRule):
                 raise ValueError(
                     f"membership data contains duplicate instrument_id values for {index_id}"
                 )
+            data_context.provenance.record_provider_call(
+                automatic_data_identity(
+                    provider_name=self.provider_name,
+                    provider=provider,
+                    capability="load_membership",
+                    request={
+                        "index_id": index_id,
+                        "start_date": data_context.effective_date,
+                        "end_date": data_context.effective_date,
+                        **self.provider_parameters,
+                    },
+                    frame=membership,
+                    sort_by=["instrument_id"],
+                )
+            )
             flags = membership.set_index("instrument_id")["is_member"]
             result[index_id] = result.index.to_series().map(flags).fillna(False).astype(bool)
-        data_context.set_dataframe(result, columns=self.get_output_fact_names())
+        data_context.set_dataframe(result, columns=self.get_output_field_names())
         return data_context

@@ -1,4 +1,4 @@
-"""Objective builders for reusable portfolio-optimisation problems."""
+"""Objective builders for reusable portfolio-optimization problems."""
 
 from __future__ import annotations
 

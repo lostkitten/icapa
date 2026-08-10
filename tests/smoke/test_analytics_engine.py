@@ -1,4 +1,4 @@
-"""Focused smoke tests for client-neutral, side-effect-free analytics."""
+"""Focused smoke tests for provider-neutral, side-effect-free analytics."""
 
 from types import SimpleNamespace
 
@@ -11,8 +11,8 @@ from icapa.analytics import (
     BrinsonInput,
     analyze_backtest,
 )
-from icapa.backtesting.backtester import BacktestResult
-from icapa.tools.container import DataContext
+from icapa.backtesting.reviews import BacktestResult
+from icapa.portfolio_construction.context import DataContext
 
 
 FIRST_REVIEW = pd.Timestamp("2026-03-23")
@@ -208,6 +208,151 @@ def test_daily_performance_and_formal_turnover_use_simulation_contract():
     assert "index_net_total_return" in selected[0].message
     pd.testing.assert_frame_equal(simulation.daily, daily_before)
     pd.testing.assert_frame_equal(simulation.rebalances, rebalances_before)
+
+
+def test_automatic_return_columns_support_gross_total_only():
+    daily = _simulation_result().daily[
+        ["index_gross_total_return", "benchmark_gross_total_return"]
+    ]
+
+    result = analyze_backtest(_backtest_result(), daily_returns=daily)
+
+    expected_total_return = (
+        (1.0 + daily["index_gross_total_return"]).prod() - 1.0
+    )
+    assert result.performance["observations"] == len(daily)
+    assert result.performance["total_return"] == pytest.approx(
+        expected_total_return
+    )
+    selected = next(
+        diagnostic
+        for diagnostic in result.diagnostics
+        if diagnostic.code == "return_columns_selected"
+    )
+    assert "index_gross_total_return" in selected.message
+
+
+def test_automatic_return_columns_support_price_only():
+    daily = _simulation_result().daily[
+        ["index_price_return", "benchmark_price_return"]
+    ]
+
+    result = analyze_backtest(_backtest_result(), daily_returns=daily)
+
+    expected_total_return = (1.0 + daily["index_price_return"]).prod() - 1.0
+    assert result.performance["observations"] == len(daily)
+    assert result.performance["total_return"] == pytest.approx(
+        expected_total_return
+    )
+    selected = next(
+        diagnostic
+        for diagnostic in result.diagnostics
+        if diagnostic.code == "return_columns_selected"
+    )
+    assert "index_price_return" in selected.message
+
+
+def test_automatic_return_column_priority_follows_documented_order():
+    daily = _simulation_result().daily.assign(
+        index_return=0.25,
+        benchmark_return=-0.25,
+    )
+    pairs = (
+        ("index_net_total_return", "benchmark_net_total_return"),
+        ("index_gross_total_return", "benchmark_gross_total_return"),
+        ("index_price_return", "benchmark_price_return"),
+        ("index_return", "benchmark_return"),
+    )
+
+    for offset, expected_pair in enumerate(pairs):
+        available_columns = [
+            column for pair in pairs[offset:] for column in pair
+        ]
+        result = analyze_backtest(
+            _backtest_result(),
+            daily_returns=daily[available_columns],
+        )
+        selected = next(
+            diagnostic
+            for diagnostic in result.diagnostics
+            if diagnostic.code == "return_columns_selected"
+        )
+        assert expected_pair[0] in selected.message
+        assert expected_pair[1] in selected.message
+
+
+def test_automatic_return_columns_skip_incomplete_higher_priority_pair():
+    daily = _simulation_result().daily[
+        [
+            "index_net_total_return",
+            "index_gross_total_return",
+            "benchmark_gross_total_return",
+        ]
+    ]
+
+    result = analyze_backtest(_backtest_result(), daily_returns=daily)
+
+    selected = next(
+        diagnostic
+        for diagnostic in result.diagnostics
+        if diagnostic.code == "return_columns_selected"
+    )
+    assert "index_gross_total_return" in selected.message
+    assert "benchmark_gross_total_return" in selected.message
+
+
+def test_automatic_return_columns_do_not_fallback_from_empty_selected_pair():
+    daily = _simulation_result().daily[
+        [
+            "index_net_total_return",
+            "benchmark_net_total_return",
+            "index_gross_total_return",
+            "benchmark_gross_total_return",
+        ]
+    ].copy()
+    daily[["index_net_total_return", "benchmark_net_total_return"]] = np.nan
+
+    result = analyze_backtest(_backtest_result(), daily_returns=daily)
+
+    assert result.performance.empty
+    assert "paired_returns_unavailable" in {
+        diagnostic.code for diagnostic in result.diagnostics
+    }
+
+
+def test_explicit_return_columns_override_priority_and_remain_strict():
+    daily = _simulation_result().daily
+    selected_columns = (
+        "index_price_return",
+        "benchmark_price_return",
+    )
+
+    result = analyze_backtest(
+        _backtest_result(),
+        daily_returns=daily,
+        return_columns=selected_columns,
+    )
+
+    expected_total_return = (1.0 + daily["index_price_return"]).prod() - 1.0
+    assert result.performance["total_return"] == pytest.approx(
+        expected_total_return
+    )
+    selected = next(
+        diagnostic
+        for diagnostic in result.diagnostics
+        if diagnostic.code == "return_columns_selected"
+    )
+    assert "index_price_return" in selected.message
+
+    with pytest.raises(
+        AnalyticsValidationError,
+        match="missing selected return columns",
+    ):
+        analyze_backtest(
+            _backtest_result(),
+            daily_returns=daily,
+            return_columns=("missing_index_return", "missing_benchmark_return"),
+        )
 
 
 def test_explicit_brinson_attribution_reconciles_to_active_return():

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
-from icapa.data_sources.registry import get_provider
+from icapa.data_sources.providers.registry import get_provider
 from icapa.portfolio_construction.rules.data_loading.base import DataLoadingRule
 
 
@@ -23,7 +23,7 @@ class ImportData(DataLoadingRule):
     include_excluded_instruments: bool = False
     command: str = "ImportData"
 
-    def get_output_fact_names(self):
+    def get_output_field_names(self):
         return self.import_columns or []
 
     def _render_file_name(self, data_context) -> str:

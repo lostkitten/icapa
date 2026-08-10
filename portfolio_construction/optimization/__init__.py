@@ -1,4 +1,4 @@
-"""Extensible constrained portfolio-optimisation API."""
+"""Extensible constrained portfolio-optimization API."""
 
 from .constraints import (
     LinearConstraintSpec,
@@ -9,17 +9,97 @@ from .constraints import (
     weight_bounds,
 )
 from .objectives import minimum_variance_objective, squared_distance_objective
+from .models import (
+    CallableObjectiveSpec,
+    ConstraintEvaluation,
+    ConstraintReport,
+    ConstraintStatus,
+    LinearObjectiveSpec,
+    MinimumVarianceObjectiveSpec,
+    ModelSolver,
+    ObjectiveSpec,
+    OptimizationModelSpec,
+    PortfolioSolverModelAdapter,
+    SolverCapability,
+    SquaredDistanceObjectiveSpec,
+    WeightVariableSpec,
+    evaluate_problem_constraints,
+)
+from .portfolio_model import (
+    FieldExposureConstraintSpec,
+    GroupWeightConstraintSpec,
+    LiquidityConstraintSpec,
+    PortfolioModelSpec,
+)
 from .problem import OptimizationError, OptimizationProblem, OptimizationResult
+from .qp import (
+    FeasibilityReport,
+    FeasibilityStatus,
+    ModelSolveResult,
+    OSQPBackend,
+    OptionalSolverDependencyError,
+    SolverRouter,
+    check_linear_feasibility,
+)
+from .risk import (
+    CovarianceEstimate,
+    CovarianceEstimator,
+    CovarianceMissingDataPolicy,
+    CovarianceShrinkageTarget,
+    FactorCovarianceEstimator,
+    ResolvedReturnWindow,
+    ReturnWindowKind,
+    ReturnWindowSpec,
+    SampleCovarianceEstimator,
+    ShrinkageCovarianceEstimator,
+    estimate_covariance_for_window,
+)
 from .solvers import PortfolioSolver, ScipySLSQPSolver, solve_slsqp
 
 __all__ = [
+    "CallableObjectiveSpec",
+    "ConstraintEvaluation",
+    "ConstraintReport",
+    "ConstraintStatus",
+    "CovarianceEstimate",
+    "CovarianceEstimator",
+    "CovarianceMissingDataPolicy",
+    "CovarianceShrinkageTarget",
+    "FactorCovarianceEstimator",
+    "FeasibilityReport",
+    "FeasibilityStatus",
+    "FieldExposureConstraintSpec",
+    "GroupWeightConstraintSpec",
     "LinearConstraintSpec",
+    "LinearObjectiveSpec",
+    "LiquidityConstraintSpec",
+    "MinimumVarianceObjectiveSpec",
+    "ModelSolver",
+    "ModelSolveResult",
     "NonlinearConstraintSpec",
+    "OSQPBackend",
+    "ObjectiveSpec",
+    "OptionalSolverDependencyError",
     "OptimizationError",
+    "OptimizationModelSpec",
     "OptimizationProblem",
     "OptimizationResult",
     "PortfolioSolver",
+    "PortfolioSolverModelAdapter",
+    "PortfolioModelSpec",
+    "ResolvedReturnWindow",
+    "ReturnWindowKind",
+    "ReturnWindowSpec",
+    "SampleCovarianceEstimator",
+    "ShrinkageCovarianceEstimator",
     "ScipySLSQPSolver",
+    "SolverCapability",
+    "SolverRouter",
+    "SquaredDistanceObjectiveSpec",
+    "WeightVariableSpec",
+    "check_linear_feasibility",
+    "estimate_covariance_for_window",
+    "evaluate_problem_constraints",
     "group_constraint_specs",
     "minimum_variance_objective",
     "solve_slsqp",

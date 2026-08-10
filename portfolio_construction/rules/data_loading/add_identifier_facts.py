@@ -2,7 +2,8 @@ from dataclasses import dataclass, field
 from typing import List
 
 from icapa.data_sources.contracts import require_columns
-from icapa.data_sources.registry import registry
+from icapa.data_sources.providers.registry import registry
+from icapa.data_sources.provenance import automatic_data_identity
 from icapa.portfolio_construction.rules.data_loading.base import DataLoadingRule
 
 
@@ -27,7 +28,7 @@ class AddIdentifierFacts(DataLoadingRule):
         if "instrument_id" in self.fields:
             raise ValueError("instrument_id is a key and must not be requested as a field")
 
-    def get_output_fact_names(self):
+    def get_output_field_names(self):
         return list(self.fields)
 
     def execute(self, data_context):
@@ -52,6 +53,20 @@ class AddIdentifierFacts(DataLoadingRule):
             raise ValueError("reference data contains duplicate instrument_id values")
         if len(reference.index.difference(current.index)):
             raise ValueError("reference data contains instruments outside the universe")
+        data_context.provenance.record_provider_call(
+            automatic_data_identity(
+                provider_name=self.provider_name,
+                provider=provider,
+                capability="load_reference_data",
+                request={
+                    "reference_date": data_context.reference_date,
+                    "fields": tuple(self.fields),
+                    **self.provider_parameters,
+                },
+                frame=reference,
+                sort_by=["instrument_id"],
+            )
+        )
         current = current.join(reference[self.fields], how="left")
         data_context.set_dataframe(current, columns=self.fields)
         return data_context

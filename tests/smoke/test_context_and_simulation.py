@@ -3,9 +3,11 @@
 import pandas as pd
 import pytest
 
-from icapa.backtesting.simulation_params import DividendTreatment
-from icapa.tools.container import DataContext
-from icapa.tools.simulations import calculate_index_returns
+from icapa.backtesting.simulation import (
+    DividendTreatment,
+    calculate_index_returns,
+)
+from icapa.portfolio_construction.context import DataContext
 
 
 def test_context_keeps_constituent_and_daily_dimensions_separate():
@@ -45,9 +47,9 @@ def test_dividend_treatments_are_explicit_and_deterministic():
     )
     weights = pd.Series([0.4, 0.6], index=pd.Index([1, 2], name="instrument_id"))
 
-    standard = calculate_index_returns(daily, weights, DividendTreatment.NYSE)
+    standard = calculate_index_returns(daily, weights, DividendTreatment.STANDARD)
     alternative = calculate_index_returns(
-        daily, weights, DividendTreatment.NYSE_ALTERNATIVE
+        daily, weights, DividendTreatment.ALTERNATIVE
     )
 
     expected_price = 0.4 * 0.02 + 0.6 * -0.01

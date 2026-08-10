@@ -19,30 +19,37 @@ from pathlib import PurePosixPath
 ZERO_OID = "0" * 40
 PLACEHOLDER_DIRECTORIES = (
     "portfolio_construction/methodologies",
-    "portfolio_construction/rules/engines",
+    "portfolio_construction/engines",
     "portfolio_construction/rules/data_processing",
 )
 ALLOWED_PLACEHOLDERS = {
     f"{directory}/.gitkeep".casefold() for directory in PLACEHOLDER_DIRECTORIES
 }
 PRIVATE_IMPLEMENTATION_FILES = {
-    "portfolio_construction/calculation_variant.py",
     "demo.py",
     "tests/smoke/test_methodology_demos.py",
     "tests/smoke/test_end_to_end_research_demo.py",
 }
-PUBLIC_PROVIDER_SURFACE_FILES = {
+PUBLIC_DATA_SOURCE_FILES = {
     "data_sources/__init__.py",
     "data_sources/contracts.py",
-    "data_sources/exceptions.py",
-    "data_sources/file_provider.py",
-    "data_sources/interfaces.py",
-    "data_sources/registry.py",
-    "data_sources/sql_server.py",
-    "data_sources/factset/__init__.py",
-    "data_sources/factset/factset.py",
-    "data_sources/snowflake/__init__.py",
-    "data_sources/snowflake/snowflake.py",
+    "data_sources/provenance/__init__.py",
+    "data_sources/provenance/identity.py",
+    "data_sources/provenance/recorder.py",
+    "data_sources/providers/__init__.py",
+    "data_sources/providers/exceptions.py",
+    "data_sources/providers/file.py",
+    "data_sources/providers/interfaces.py",
+    "data_sources/providers/registry.py",
+    "data_sources/providers/sql_server.py",
+    "data_sources/providers/factset/__init__.py",
+    "data_sources/providers/factset/adapter.py",
+    "data_sources/providers/snowflake/__init__.py",
+    "data_sources/providers/snowflake/adapter.py",
+    "data_sources/services/__init__.py",
+    "data_sources/services/history.py",
+    "data_sources/universes/__init__.py",
+    "data_sources/universes/mapping.py",
 }
 PUBLIC_BINARY_ALLOWLIST = {
     "assets/icapa.png",
@@ -239,7 +246,7 @@ def _validate_path(
 
     if enforce_public_data_sources and folded.startswith("data_sources/"):
         allowed_files = {
-            item.casefold() for item in PUBLIC_PROVIDER_SURFACE_FILES
+            item.casefold() for item in PUBLIC_DATA_SOURCE_FILES
         }
         if folded not in allowed_files:
             errors.append(f"non-public data-source path is tracked: {entry.path}")

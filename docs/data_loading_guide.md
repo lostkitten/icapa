@@ -4,15 +4,23 @@
 
 ICAPA separates data access from weight production. Provider adapters obtain
 data from an external system and translate it into canonical tables.
-Data-loading rules place those tables in a `DataContext`; an external weight
-producer consumes that context and writes `index_weight`.
+Data-loading rules place those tables in a `DataContext`; an `IndexRecipe` or a
+compatible `execute(DataContext)` weight producer consumes that context and
+writes `index_weight`.
 
 ```text
-Provider -> canonical contract -> external weight producer -> cached target weights -> simulation -> analytics -> report
+Provider
+    -> canonical contract
+    -> IndexRecipe or compatible weight producer
+    -> effective-date target weights
+    -> simulation
+    -> analytics
+    -> report
 ```
 
-External weight producers must not contain SQL, credentials, physical table
-names, provider field names, or implicit provider selection.
+Construction stages and compatible weight producers must not contain SQL,
+credentials, physical table names, provider field names, or implicit provider
+selection.
 
 ## Date model
 
@@ -22,12 +30,12 @@ ICAPA uses three dates, each with one meaning:
 | --- | --- | --- |
 | `reference_date` | Cutoff date for information available to a review | Point-in-time inputs and historical observations used to calculate review weights must not be later than this date. |
 | `effective_date` | First date on which the calculated weights apply | Must be on or after `reference_date`. |
-| `business_date` | Observation date of a daily market-data row | Historical rows used by a weight producer must respect `reference_date`; realized rows used after `effective_date` for simulation may be later. |
+| `business_date` | Observation date of a daily market-data row | Historical rows used by construction must respect `reference_date`; realized rows used after `effective_date` for simulation may be later. |
 
 There is no generic date field. An adapter must map each source date to the appropriate canonical date according to its business meaning.
 
 The distinction between historical calculation data and realized simulation
-data is intentional. An external weight producer may use observations through
+data is intentional. Construction may use observations through
 `reference_date` to calculate weights, while the daily index simulator then
 uses market observations on and after `effective_date` to measure how those
 frozen weights perform. The later observations are simulation outputs, not
@@ -52,7 +60,7 @@ Every universe row represents one instrument for one review and must contain all
 | `base_currency` | Currency used by the index calculation |
 | `fx_rate` | Multiplier converting the instrument currency to `base_currency` |
 | `market_cap` | Investable market capitalization in `base_currency` |
-| `benchmark_weight` | Starting weight in the underlying universe |
+| `benchmark_weight` | Starting weight in the source universe |
 | `reference_date` | Information cutoff for the review |
 | `effective_date` | Date on which the calculated weights apply |
 
@@ -99,8 +107,20 @@ Adapters implement only the capabilities they can supply:
 | `load_membership` | Instrument membership flags | `index_id`, `start_date`, `end_date` |
 | `load_reference_data` | Identifiers and classifications | `instrument_ids`, `reference_date`, `fields` |
 | `load_third_party_data` | Explicitly typed third-party fields | `data_type`, `instrument_ids`, `fields`, `reference_date`, `parameters` |
+| `describe_snapshot` | Optional non-sensitive identity for an exact provider request | `capability`, canonical request parameters |
 
 The registry resolves providers by name and capability. Universe, market-data, membership, reference-data, and third-party loading rules require an explicit `provider_name`; the controlled file rule uses the registered `file` provider unless another file provider is named. ICAPA never selects a provider by fallback order.
+
+`describe_snapshot` is optional and does not return rows. It lets a named
+workspace derive a safe source-partition identity before reading a provider.
+When an adapter cannot expose a stable snapshot, ICAPA loads and canonicalizes
+the response and computes its logical content digest. In that case it does not
+reuse an earlier source artifact before the current response has been
+verified, but it may reuse downstream calculation artifacts after the current
+content has been proved identical. `READ_ONLY` uses only a locally persisted
+snapshot descriptor and verified source artifacts; it does not call provider
+methods. Snapshot metadata must never contain credentials, SQL, connection
+strings, or secret values.
 
 ### Available integration points
 
@@ -125,7 +145,7 @@ Specialized external data is deliberately visible in configuration. `ThirdPartyD
 | Parameter | Purpose |
 | --- | --- |
 | `data_type` | Declares the external data category |
-| `fields` | Exact canonical fields requested by the external weight producer |
+| `fields` | Exact canonical fields requested by construction |
 | `provider_name` | Explicit registered adapter name |
 | `provider_parameters` | Optional source-specific query controls interpreted only by the adapter |
 
@@ -135,7 +155,7 @@ The rule calls the provider's `load_third_party_data` capability at `reference_d
 
 | Rule | Input source | Destination |
 | --- | --- | --- |
-| `AddUnderlyingIndex` | `load_universe` | Canonical constituent table in `DataContext` |
+| `LoadUniverse` | `load_universe` | Canonical constituent table in `DataContext` |
 | `AddReturns` | `load_daily_market_data` | Instrument-by-`business_date` market-data table |
 | `AddIdentifierFacts` | `load_reference_data` | Columns joined to constituents by `instrument_id` |
 | `AddIndexMemberships` | `load_membership` | Boolean membership columns on constituents |
@@ -144,9 +164,22 @@ The rule calls the provider's `load_third_party_data` capability at `reference_d
 | `ImportData` | Registered CSV/Excel file provider | Explicitly selected columns merged on configured keys |
 | `LoadAllData` | One universe rule followed by an ordered rule list | Fully prepared `DataContext` |
 
-The constituent table is the point-in-time input to the external weight
-producer. Daily market data remains a separate time series. The producer writes
-its final result as `index_weight`; it must not overwrite `benchmark_weight`.
+The provider-neutral public vocabulary is:
+
+- `UniverseProfile` describes the deployment-controlled universe, provider,
+  calendar, and dataset mapping.
+- `LoadUniverse` resolves that profile and loads the canonical constituent
+  table.
+- `StandardizeFactors` converts explicitly requested factor fields into
+  provider-neutral standardized values before scoring or optimization.
+- `DividendTreatment.STANDARD` and
+  `DividendTreatment.ALTERNATIVE` select calculation formulas independently
+  from the provider that supplied dividend data.
+
+The constituent table is the point-in-time input to the recipe or compatible
+weight producer. Daily market data remains a separate time series. Construction
+writes its final result as `index_weight`; it must not overwrite
+`benchmark_weight`.
 
 ## Configuration parameters
 
@@ -155,7 +188,7 @@ Parameters fall into four groups and should be kept separate:
 1. **Review parameters:** `reference_date`, `effective_date`, and any explicit schedule or `calendar_id`.
 2. **Provider parameters:** `provider_name` plus adapter-specific `provider_parameters`. Secrets belong in the deployment environment or a secret manager, never in weight-production configuration.
 3. **Dataset parameters:** `universe_id`, membership `index_id`, requested `fields`, date ranges, file paths, merge keys, and third-party data type.
-4. **Weight-production parameters:** objective settings, constraints, tolerances, weight bounds, and other calculation settings owned by the external producer.
+4. **Weight-production parameters:** recipe-stage configuration, objective settings, constraints, tolerances, weight bounds, and other calculation settings owned by construction.
 
 Provider parameters determine where data comes from. Dataset parameters
 determine what is requested. Weight-production parameters determine how
@@ -176,16 +209,18 @@ Unknown configuration fields, missing providers, missing capabilities, ambiguous
 8. Verify weight totals, identifier uniqueness, date cutoffs, and unavailable-data failures.
 
 This boundary allows a provider implementation to change without changing the
-external weight producer.
+recipe or compatible weight producer.
 
 ## Public extension boundary
 
-`portfolio_construction` contains generic optimisation contracts, objective and
-constraint builders, and solver interfaces. The private extension folders
+`portfolio_construction` contains `IndexRecipe`, generic optimization
+contracts, objective and constraint builders, and solver interfaces. The
+private extension folders
 `portfolio_construction/methodologies/` and
-`portfolio_construction/rules/engines/` intentionally contain only `.gitkeep`
-in the public repository. Weight-production implementations are supplied
-outside the public core.
+`portfolio_construction/engines/`, together with selected implementations
+under `portfolio_construction/rules/data_processing/`, intentionally contain
+only `.gitkeep` in the public repository. Private recipe stages and compatible
+weight producers are supplied outside the public core.
 
 The named-workspace, simulation, analytics, and reporting workflow is described
 in [the index research workflow](index_research_workflow.md).

@@ -7,35 +7,100 @@ and analytics should only receive the names defined here.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from enum import StrEnum
 import math
 
 import pandas as pd
 
 
+class DataSource(StrEnum):
+    """Provider names included in the public integration surface."""
+
+    FACTSET = "factset"
+    SNOWFLAKE = "snowflake"
+    FILE = "file"
+
+    @classmethod
+    def metadata(cls) -> dict[str, dict[str, object]]:
+        """Return non-sensitive integration metadata for each provider."""
+
+        return {
+            "factset": {"configured": False, "kind": "sql_server"},
+            "snowflake": {"configured": False, "kind": "placeholder"},
+            "file": {"configured": True, "kind": "csv_excel"},
+        }
+
+
+class ThirdPartyDataType(StrEnum):
+    """Explicit categories for non-canonical external datasets."""
+
+    FACTOR_DATA = "ThirdPartyFactorData"
+    EMISSIONS = "ThirdPartyEmissions"
+    LIQUIDITY_DATA = "ThirdPartyLiquidityData"
+
+
+class IdentifierType(StrEnum):
+    """Supported instrument identifier fields."""
+
+    INSTRUMENT_ID = "instrument_id"
+    ISIN = "isin"
+    CUSIP = "cusip"
+
+
+class UniverseColumns(StrEnum):
+    """Canonical columns for a point-in-time investable universe."""
+
+    INSTRUMENT_ID = "instrument_id"
+    NAME = "name"
+    COUNTRY = "country"
+    INDUSTRY = "industry"
+    SHARES = "shares"
+    FREE_FLOAT = "free_float"
+    PRICE = "price"
+    CURRENCY = "currency"
+    BASE_CURRENCY = "base_currency"
+    FX_RATE = "fx_rate"
+    MARKET_CAP = "market_cap"
+    BENCHMARK_WEIGHT = "benchmark_weight"
+    REFERENCE_DATE = "reference_date"
+    EFFECTIVE_DATE = "effective_date"
+
+
+class DailyMarketColumns(StrEnum):
+    """Canonical columns for daily instrument-level market observations."""
+
+    INSTRUMENT_ID = "instrument_id"
+    BUSINESS_DATE = "business_date"
+    PRICE_RETURN = "price_return"
+    GROSS_DIVIDEND = "gross_dividend"
+    NET_DIVIDEND = "net_dividend"
+    MARKET_CAP = "market_cap"
+
+
 UNIVERSE_COLUMNS = (
-    "instrument_id",
-    "name",
-    "country",
-    "industry",
-    "shares",
-    "free_float",
-    "price",
-    "currency",
-    "base_currency",
-    "fx_rate",
-    "market_cap",
-    "benchmark_weight",
-    "reference_date",
-    "effective_date",
+    UniverseColumns.INSTRUMENT_ID.value,
+    UniverseColumns.NAME.value,
+    UniverseColumns.COUNTRY.value,
+    UniverseColumns.INDUSTRY.value,
+    UniverseColumns.SHARES.value,
+    UniverseColumns.FREE_FLOAT.value,
+    UniverseColumns.PRICE.value,
+    UniverseColumns.CURRENCY.value,
+    UniverseColumns.BASE_CURRENCY.value,
+    UniverseColumns.FX_RATE.value,
+    UniverseColumns.MARKET_CAP.value,
+    UniverseColumns.BENCHMARK_WEIGHT.value,
+    UniverseColumns.REFERENCE_DATE.value,
+    UniverseColumns.EFFECTIVE_DATE.value,
 )
 
 DAILY_MARKET_COLUMNS = (
-    "instrument_id",
-    "business_date",
-    "price_return",
-    "gross_dividend",
-    "net_dividend",
-    "market_cap",
+    DailyMarketColumns.INSTRUMENT_ID.value,
+    DailyMarketColumns.BUSINESS_DATE.value,
+    DailyMarketColumns.PRICE_RETURN.value,
+    DailyMarketColumns.GROSS_DIVIDEND.value,
+    DailyMarketColumns.NET_DIVIDEND.value,
+    DailyMarketColumns.MARKET_CAP.value,
 )
 
 REVIEW_SCHEDULE_COLUMNS = (
@@ -157,3 +222,20 @@ def validate_review_schedule(df: pd.DataFrame) -> pd.DataFrame:
     for row in result.itertuples(index=False):
         validate_review_dates(row.reference_date, row.effective_date)
     return result.sort_values("effective_date").reset_index(drop=True)
+
+
+__all__ = [
+    "DAILY_MARKET_COLUMNS",
+    "REVIEW_SCHEDULE_COLUMNS",
+    "UNIVERSE_COLUMNS",
+    "DailyMarketColumns",
+    "DataSource",
+    "IdentifierType",
+    "ThirdPartyDataType",
+    "UniverseColumns",
+    "require_columns",
+    "validate_daily_market_data",
+    "validate_review_dates",
+    "validate_review_schedule",
+    "validate_universe",
+]

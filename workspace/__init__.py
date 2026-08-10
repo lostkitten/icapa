@@ -1,6 +1,14 @@
 """Named ICAPA workspace artifacts and review caching."""
 
-from .cache import (
+from .artifacts import (
+    ArtifactError,
+    ArtifactIntegrityError,
+    ArtifactSchemaError,
+    PARQUET_ARTIFACT_SCHEMA_VERSION,
+    ParquetArtifactStore,
+    ParquetDependencyError,
+)
+from .readers import (
     ArtifactMetadata,
     CacheIntegrityError,
     CacheMissError,
@@ -17,21 +25,84 @@ from .cache import (
     get_workspace_root,
     validate_workspace_name,
 )
-
+from .identity import (
+    automatic_callable_identity,
+    IdentityError,
+    UnfingerprintableComponentError,
+    automatic_component_identity,
+    automatic_data_identity,
+    automatic_digest,
+    automatic_provider_identity,
+    automatic_runtime_identity,
+    automatic_source_closure_identity,
+    canonicalise,
+    canonicalize,
+    dataframe_content_digest,
+    safe_parameter_identity,
+)
+from .caches import (
+    CacheMode,
+    CacheOptions,
+    CacheStage,
+    ParquetStageStore,
+    register_review_diagnostic_enum,
+)
+from .manifests import (
+    ArtifactRef,
+    RunManifest,
+    RunManifestRef,
+)
+from .repository import (
+    ManifestIntegrityError,
+    RUN_MANIFEST_SCHEMA_VERSION,
+    WorkspaceRepository,
+    WorkspaceRepositoryError,
+)
 __all__ = [
+    "ArtifactError",
+    "ArtifactIntegrityError",
     "ArtifactMetadata",
+    "ArtifactRef",
+    "ArtifactSchemaError",
     "CacheIntegrityError",
     "CacheMissError",
+    "CacheMode",
+    "CacheOptions",
     "CachePolicy",
     "CacheSource",
+    "CacheStage",
+    "IdentityError",
     "LoadedReview",
+    "ManifestIntegrityError",
+    "PARQUET_ARTIFACT_SCHEMA_VERSION",
+    "ParquetArtifactStore",
+    "ParquetDependencyError",
+    "ParquetStageStore",
+    "RUN_MANIFEST_SCHEMA_VERSION",
+    "WorkspaceRepository",
+    "WorkspaceRepositoryError",
     "ReviewArtifact",
+    "RunManifest",
+    "RunManifestRef",
+    "UnfingerprintableComponentError",
     "WORKSPACE_ROOT_ENV",
     "WorkspaceError",
     "WorkspaceStore",
+    "automatic_callable_identity",
+    "automatic_component_identity",
+    "automatic_data_identity",
+    "automatic_digest",
+    "automatic_provider_identity",
+    "automatic_runtime_identity",
+    "automatic_source_closure_identity",
     "build_run_fingerprint",
     "canonical_digest",
+    "canonicalise",
+    "canonicalize",
     "clear_memory_cache",
+    "dataframe_content_digest",
     "get_workspace_root",
+    "register_review_diagnostic_enum",
+    "safe_parameter_identity",
     "validate_workspace_name",
 ]

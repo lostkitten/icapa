@@ -1,40 +1,45 @@
-"""Public data-source entry points.
+"""Small, side-effect-free facade for canonical data contracts and providers."""
 
-FactSet and Snowflake are unconfigured integration examples. The generic file
-provider has no database, account, credential, or default dataset.
-"""
-
-from .factset import FactSet
-from .file_provider import FileProvider
-from .registry import get_provider, register_provider, registry
-from .snowflake import SnowflakePlaceholder
-
-
-def register_default_placeholders(*, replace: bool = False):
-    placeholders = {
-        "factset": FactSet(),
-        "snowflake": SnowflakePlaceholder(),
-        "file": FileProvider(),
-    }
-    for name, provider in placeholders.items():
-        if replace:
-            register_provider(name, provider, replace=True)
-        else:
-            try:
-                register_provider(name, provider)
-            except KeyError:
-                pass
-    return placeholders
-
-
-register_default_placeholders()
+from .contracts import (
+    DailyMarketColumns,
+    DataSource,
+    IdentifierType,
+    ThirdPartyDataType,
+    UniverseColumns,
+)
+from .provenance import ProvenanceRecorder
+from .providers import (
+    FactSet,
+    FileProvider,
+    SnapshotAwareProvider,
+    SnowflakePlaceholder,
+    get_provider,
+    register_provider,
+    registry,
+)
+from .universes import (
+    UniverseMappingMatch,
+    UniverseMappingNotConfiguredError,
+    UniverseMappingRegistry,
+    UniverseProfile,
+)
 
 __all__ = [
     "FactSet",
     "FileProvider",
+    "DailyMarketColumns",
+    "DataSource",
+    "IdentifierType",
+    "ProvenanceRecorder",
     "SnowflakePlaceholder",
+    "SnapshotAwareProvider",
+    "ThirdPartyDataType",
+    "UniverseMappingMatch",
+    "UniverseMappingNotConfiguredError",
+    "UniverseMappingRegistry",
+    "UniverseProfile",
+    "UniverseColumns",
     "get_provider",
-    "register_default_placeholders",
     "register_provider",
     "registry",
 ]

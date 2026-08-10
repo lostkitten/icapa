@@ -13,18 +13,19 @@ from icapa.data_sources import (
     register_provider,
     registry,
 )
-from icapa.data_sources.exceptions import (
+from icapa.data_sources.providers.exceptions import (
     DataCapabilityNotConfiguredError,
     DataSourceNotConfiguredError,
 )
+from icapa.data_sources.providers.interfaces import SnapshotAwareProvider
 from icapa.portfolio_construction.rules.data_loading import (
     AddIdentifierFacts,
     AddReturns,
     AddThirdPartyData,
-    AddUnderlyingIndex,
+    LoadUniverse,
 )
-from icapa.tools.container import DataContext
-from icapa.tools.enums.data_loading import ThirdPartyDataType
+from icapa.data_sources.contracts import ThirdPartyDataType
+from icapa.portfolio_construction.context import DataContext
 
 
 class SyntheticProvider:
@@ -110,7 +111,7 @@ def test_typed_loading_rules_join_synthetic_data(synthetic_provider):
         effective_date="2026-06-22",
         index_id="SYNTHETIC_DEMO",
     )
-    AddUnderlyingIndex(
+    LoadUniverse(
         universe_id="SYNTHETIC_UNIVERSE", provider_name="synthetic"
     ).execute(context)
     AddIdentifierFacts(fields=["isin"], provider_name="synthetic").execute(context)
@@ -125,6 +126,44 @@ def test_typed_loading_rules_join_synthetic_data(synthetic_provider):
     assert {"isin", "quality_signal", "value_signal"}.issubset(context.cons.columns)
     assert context.daily is not None
     assert context.daily.index.names == ["instrument_id", "business_date"]
+    assert len(context.provenance.records) == 4
+    assert {
+        record["provider"]["capability"] for record in context.provenance.records
+    } == {
+        "load_universe",
+        "load_reference_data",
+        "load_third_party_data",
+        "load_daily_market_data",
+    }
+    assert all(len(record["content_digest"]) == 64 for record in context.provenance.records)
+
+
+def test_data_lineage_is_automatic_and_does_not_persist_provider_secrets(
+    synthetic_provider,
+):
+    context = DataContext(
+        reference_date="2026-06-05",
+        effective_date="2026-06-22",
+        index_id="SYNTHETIC_DEMO",
+    )
+    LoadUniverse(
+        universe_id="SYNTHETIC_UNIVERSE",
+        provider_name="synthetic",
+        provider_parameters={
+            "password": "do-not-persist",
+            "connection_string": "do-not-persist",
+            "sql_query": "do-not-persist",
+        },
+    ).execute(context)
+
+    serialized = str(context.provenance.records)
+    assert "do-not-persist" not in serialized
+    parameter_identity = context.provenance.records[0]["provider"]["parameters"]
+    assert parameter_identity["redacted_keys"] == [
+        "connection_string",
+        "password",
+        "sql_query",
+    ]
 
 
 def test_third_party_data_requires_type_fields_and_provider():
@@ -154,3 +193,20 @@ def test_csv_and_excel_inputs():
         upload.to_excel(excel_path, index=False)
         pd.testing.assert_frame_equal(provider.read(csv_path), upload)
         pd.testing.assert_frame_equal(provider.read(excel_path), upload)
+        snapshot = provider.describe_snapshot(
+            "read",
+            {"file_path": csv_path},
+        )
+        assert isinstance(provider, SnapshotAwareProvider)
+        assert snapshot["file_name"] == "upload.csv"
+        assert len(snapshot["content_digest"]) == 64
+        assert directory not in str(snapshot)
+        csv_path.write_text(
+            "instrument_id,name\n1001,Changed\n",
+            encoding="utf-8",
+        )
+        changed = provider.describe_snapshot(
+            "read",
+            {"file_path": csv_path},
+        )
+        assert changed["content_digest"] != snapshot["content_digest"]

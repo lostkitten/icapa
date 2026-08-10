@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
-from icapa.data_sources.registry import registry
+from icapa.data_sources.providers.registry import registry
 from icapa.portfolio_construction.rules.data_loading.base import DataLoadingRule
 
 
@@ -28,8 +28,8 @@ class ApplyExclusions(DataLoadingRule):
     command: str = "ApplyExclusions"
 
     def __post_init__(self):
-        self.exclude = self._normalise_filters(self.exclude)
-        self.only_include = self._normalise_filters(self.only_include)
+        self.exclude = self._normalize_filters(self.exclude)
+        self.only_include = self._normalize_filters(self.only_include)
         if (
             self.exclude.get("index_id") or self.only_include.get("index_id")
         ) and (not self.provider_name or not self.provider_name.strip()):
@@ -40,12 +40,18 @@ class ApplyExclusions(DataLoadingRule):
         super().__post_init__()
 
     @staticmethod
-    def _normalise_filters(filters):
+    def _normalize_filters(filters):
         filters = filters or {}
         return {
             key: value if isinstance(value, (list, tuple, set)) else [value]
             for key, value in filters.items()
         }
+
+    @staticmethod
+    def _normalise_filters(filters):
+        """Retain ``_normalise_filters`` as a compatibility spelling."""
+
+        return ApplyExclusions._normalize_filters(filters)
 
     def _load_membership(self, index_id, data_context) -> set:
         provider = registry.resolve("load_membership", self.provider_name)
@@ -65,11 +71,11 @@ class ApplyExclusions(DataLoadingRule):
             return set(membership.index)
         return set(membership)
 
-    def get_input_fact_names(self):
+    def get_input_field_names(self):
         columns = (set(self.exclude) | set(self.only_include)) - {"index_id"}
         return sorted(columns) + ["instrument_id", "excluded", "exclusion_reason", "index_weight"]
 
-    def get_output_fact_names(self):
+    def get_output_field_names(self):
         return ["index_weight", "excluded", "exclusion_reason"]
 
     @staticmethod
@@ -84,7 +90,7 @@ class ApplyExclusions(DataLoadingRule):
         return [str(value)]
 
     def execute(self, data_context):
-        df = data_context.cons.copy()
+        df = data_context.constituents.copy()
         if "excluded" not in df:
             df["excluded"] = False
         if "exclusion_reason" not in df:
@@ -136,13 +142,15 @@ class ApplyExclusions(DataLoadingRule):
         if total_weight <= 0:
             raise ValueError("exclusions removed all positive index weight")
         df["index_weight"] /= total_weight
-        data_context.set_dataframe(df, columns=self.get_output_fact_names())
+        data_context.set_dataframe(df, columns=self.get_output_field_names())
         return data_context
 
     def final_checks(self, data_context, final_weights: pd.Series) -> dict:
         excluded = data_context._df["excluded"].fillna(True)
         if set(excluded.index) != set(final_weights.index):
-            raise ValueError("final index and starting universe have different instrument ids")
+            raise ValueError(
+                "final index and starting universe have different instrument IDs"
+            )
         df = pd.concat([excluded, final_weights], axis=1)
         df["is_constraint_met"] = ~((df["excluded"]) & (df["index_weight"] > 0))
         df["violation_no_tol"] = df["excluded"].astype(int) * df["index_weight"]
