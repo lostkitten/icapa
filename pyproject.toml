@@ -25,7 +25,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==8.3.4"]
+dev = [
+    "pytest==8.3.4",
+    "setuptools==83.0.0",
+    "wheel==0.45.1",
+]
 qp = ["osqp==1.0.4"]
 analytics = [
     "matplotlib==3.11.1",
