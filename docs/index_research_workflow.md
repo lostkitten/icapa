@@ -551,6 +551,9 @@ additive model layer provides:
 - `OptimizationModelSpec` for an inspectable objective and linear/nonlinear
   constraints;
 - squared-distance, linear, and minimum-variance objective specifications;
+- Entropy-Guided Multiplicative Update (EGMU) solvers for exact and elastic
+  minimum-relative-entropy exposure targets, plus KL/Bregman--Dykstra
+  projection across linear target, group, and instrument constraints;
 - reusable group, turnover, tracking-error, and general constraint builders;
 - `SolverRouter`, which checks declared capabilities and uses one explicitly
   selected backend without silent fallback;
@@ -564,6 +567,26 @@ additive model layer provides:
 models. They compile into the general linear/nonlinear contracts without
 changing a solver. Unsupported backend capabilities fail before solve; ICAPA
 does not rewrite the model silently.
+
+`EGMUNewtonSolver` solves exact exposure equalities in the
+exposure-dimensional dual, while `EGMUElasticSolver` explicitly trades target
+residual against relative entropy. `EGMUProjectionSolver` preserves the same
+multiplicative KL geometry for equality, interval, and one-sided linear
+constraints. `EGMUConstrainedElasticSolver` combines a soft exposure target
+set with hard group and instrument constraints. These solvers require a
+strictly positive prior on the active support; callers with zero benchmark
+weights must restrict the problem to the positive support or choose an
+explicit smoothing policy.
+
+The public **Entropy Exposure** construction wraps those solvers as
+`EntropyExposureEngine` and `EntropyExposureMethodology`. Import them from
+`icapa.portfolio_construction.engines` and
+`icapa.portfolio_construction.methodologies`, respectively. The methodology
+loads a provider-neutral universe and optional third-party exposure fields;
+its `to_recipe()` result declares those provider requests for compilation and
+content-cache identity. Hard mode enforces target, group, capacity, and weight
+constraints. Elastic mode softens only the exposure targets and continues to
+verify the structural constraints as hard bounds.
 
 Minimum-variance research uses `ReturnWindowSpec` with any public
 `CovarianceEstimator`:

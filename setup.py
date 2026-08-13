@@ -16,9 +16,22 @@ _LOCAL_ONLY_MODULES = frozenset(
     }
 )
 _LOCAL_ONLY_PACKAGE_PREFIXES = (
+    "icapa.portfolio_construction.rules.data_processing",
+)
+_PROTECTED_IMPLEMENTATION_PACKAGE_PREFIXES = (
     "icapa.portfolio_construction.engines",
     "icapa.portfolio_construction.methodologies",
-    "icapa.portfolio_construction.rules.data_processing",
+)
+_PUBLIC_IMPLEMENTATION_MODULES = frozenset(
+    {
+        "icapa.portfolio_construction.engines.__init__",
+        "icapa.portfolio_construction.engines.entropy_exposure_engine",
+        "icapa.portfolio_construction.methodologies.__init__",
+        (
+            "icapa.portfolio_construction.methodologies."
+            "entropy_exposure_methodology"
+        ),
+    }
 )
 
 
@@ -49,6 +62,14 @@ class PublicBuildPy(build_py):
             if _public_module_name(item[0], item[1])
         ]
 
+    def find_package_modules(self, package, package_dir):
+        modules = super().find_package_modules(package, package_dir)
+        return [
+            item
+            for item in modules
+            if _public_module_name(item[0], item[1])
+        ]
+
 
 def _public_module_name(package: str, module: str) -> bool:
     qualified_name = f"{package}.{module}"
@@ -58,6 +79,14 @@ def _public_module_name(package: str, module: str) -> bool:
             qualified_name == prefix
             or qualified_name.startswith(f"{prefix}.")
             for prefix in _LOCAL_ONLY_PACKAGE_PREFIXES
+        )
+        and (
+            not any(
+                qualified_name == prefix
+                or qualified_name.startswith(f"{prefix}.")
+                for prefix in _PROTECTED_IMPLEMENTATION_PACKAGE_PREFIXES
+            )
+            or qualified_name in _PUBLIC_IMPLEMENTATION_MODULES
         )
     )
 

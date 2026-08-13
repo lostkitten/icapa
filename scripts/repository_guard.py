@@ -25,6 +25,15 @@ PLACEHOLDER_DIRECTORIES = (
 ALLOWED_PLACEHOLDERS = {
     f"{directory}/.gitkeep".casefold() for directory in PLACEHOLDER_DIRECTORIES
 }
+PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES = {
+    "portfolio_construction/engines/__init__.py",
+    "portfolio_construction/engines/entropy_exposure_engine.py",
+    "portfolio_construction/methodologies/__init__.py",
+    (
+        "portfolio_construction/methodologies/"
+        "entropy_exposure_methodology.py"
+    ),
+}
 PRIVATE_IMPLEMENTATION_FILES = {
     "demo.py",
     "tests/smoke/test_methodology_demos.py",
@@ -253,7 +262,14 @@ def _validate_path(
 
     for directory in PLACEHOLDER_DIRECTORIES:
         prefix = f"{directory.casefold()}/"
-        if folded.startswith(prefix) and folded not in ALLOWED_PLACEHOLDERS:
+        public_implementations = {
+            item.casefold() for item in PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES
+        }
+        if (
+            folded.startswith(prefix)
+            and folded not in ALLOWED_PLACEHOLDERS
+            and folded not in public_implementations
+        ):
             errors.append(f"protected implementation path is tracked: {entry.path}")
 
     if folded in {item.casefold() for item in PRIVATE_IMPLEMENTATION_FILES}:
@@ -261,6 +277,10 @@ def _validate_path(
     if (
         folded.startswith("portfolio_construction/")
         and path.name.casefold().endswith(("_methodology.py", "_engine.py"))
+        and folded
+        not in {
+            item.casefold() for item in PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES
+        }
     ):
         errors.append(f"implementation-shaped source file is tracked: {entry.path}")
     if parts & GENERATED_PATH_PARTS:

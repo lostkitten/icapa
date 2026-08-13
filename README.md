@@ -82,11 +82,13 @@ Optional packages are imported only when their feature is requested. Missing
 optional dependencies produce an actionable error and never change the chosen
 calculation silently.
 
-## Private construction implementations
+## Construction implementation boundary
 
-Public distributions include construction contracts and extension interfaces,
-but do not distribute deployment-specific methodology, engine, or selected
-processing implementations. Development checkouts can supply private modules
+Public distributions include construction contracts, extension interfaces,
+and the provider-neutral Entropy Exposure engine and methodology. Import the
+latter from `icapa.portfolio_construction.engines` and
+`icapa.portfolio_construction.methodologies`. Deployment-specific construction
+and selected processing implementations remain local to development checkouts
 under:
 
 ```text
@@ -95,7 +97,7 @@ portfolio_construction/engines/
 portfolio_construction/rules/data_processing/
 ```
 
-The build and repository guards enforce this boundary.
+The build and repository guards use an explicit allowlist for this boundary.
 
 ## Data and reports
 

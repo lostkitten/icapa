@@ -8,6 +8,21 @@ from .constraints import (
     turnover_constraint,
     weight_bounds,
 )
+from .entropy_dual import (
+    EGMUElasticSolver,
+    EGMUNewtonSolver,
+    EGMUResult,
+    egmu_elastic,
+    egmu_newton,
+)
+from .entropy_projection import (
+    EGMUConstrainedElasticSolver,
+    EGMUProjectionResult,
+    EGMUProjectionSolver,
+    egmu_project_linear,
+    egmu_project_elastic,
+    relative_entropy,
+)
 from .objectives import minimum_variance_objective, squared_distance_objective
 from .models import (
     CallableObjectiveSpec,
@@ -65,6 +80,12 @@ __all__ = [
     "CovarianceEstimator",
     "CovarianceMissingDataPolicy",
     "CovarianceShrinkageTarget",
+    "EGMUConstrainedElasticSolver",
+    "EGMUElasticSolver",
+    "EGMUNewtonSolver",
+    "EGMUProjectionResult",
+    "EGMUProjectionSolver",
+    "EGMUResult",
     "FactorCovarianceEstimator",
     "FeasibilityReport",
     "FeasibilityStatus",
@@ -98,10 +119,15 @@ __all__ = [
     "SquaredDistanceObjectiveSpec",
     "WeightVariableSpec",
     "check_linear_feasibility",
+    "egmu_elastic",
+    "egmu_newton",
+    "egmu_project_linear",
+    "egmu_project_elastic",
     "estimate_covariance_for_window",
     "evaluate_problem_constraints",
     "group_constraint_specs",
     "minimum_variance_objective",
+    "relative_entropy",
     "solve_slsqp",
     "squared_distance_objective",
     "tracking_error_constraint",
