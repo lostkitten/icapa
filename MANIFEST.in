@@ -4,8 +4,8 @@ include assets/icapa.png
 include reporting/templates/index_research_report.xlsx
 
 exclude demo.py
-prune portfolio_construction/methodologies
-prune portfolio_construction/engines
+recursive-include portfolio_construction/methodologies *.py
+recursive-include portfolio_construction/engines *.py
 prune portfolio_construction/rules/data_processing
 prune build
 prune dist

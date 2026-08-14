@@ -1,6 +1,7 @@
 """Smoke tests for the intentionally small public package boundary."""
 
 import ast
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -9,13 +10,21 @@ import tomllib
 import icapa
 from icapa import portfolio_construction
 from icapa.portfolio_construction import IndexRecipe, OptimizationProblem
+from icapa.portfolio_construction import engines, methodologies
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PRIVATE_PACKAGE_PREFIXES = {
-    "icapa.portfolio_construction.engines",
-    "icapa.portfolio_construction.methodologies",
+LOCAL_ONLY_PACKAGE_PREFIXES = {
     "icapa.portfolio_construction.rules.data_processing",
+}
+PUBLIC_IMPLEMENTATION_FILES = {
+    "portfolio_construction/engines/entropy_exposure_engine.py",
+    "portfolio_construction/engines/factor_tilt_engine.py",
+    "portfolio_construction/engines/minimum_variance_engine.py",
+    "portfolio_construction/engines/quantile_selection_engine.py",
+    "portfolio_construction/methodologies/factor_tilt_methodology.py",
+    "portfolio_construction/methodologies/minimum_variance_methodology.py",
+    "portfolio_construction/methodologies/quantile_selection_methodology.py",
 }
 PUBLIC_DOMAIN_DIRECTORIES = (
     "analytics",
@@ -70,6 +79,12 @@ def test_public_portfolio_construction_surface_is_explicit_and_client_neutral():
         "CovarianceEstimator",
         "CovarianceMissingDataPolicy",
         "CovarianceShrinkageTarget",
+        "EGMUConstrainedElasticSolver",
+        "EGMUElasticSolver",
+        "EGMUNewtonSolver",
+        "EGMUProjectionResult",
+        "EGMUProjectionSolver",
+        "EGMUResult",
         "DataContainer",
         "DataContext",
         "ExecutionPlan",
@@ -139,8 +154,13 @@ def test_public_portfolio_construction_surface_is_explicit_and_client_neutral():
         "StandardizeFactors",
         "WeightVariableSpec",
         "check_linear_feasibility",
+        "egmu_elastic",
+        "egmu_newton",
+        "egmu_project_linear",
+        "egmu_project_elastic",
         "estimate_covariance_for_window",
         "evaluate_problem_constraints",
+        "relative_entropy",
         "factor_output_name",
         "get_constituents",
         "standardize_factors",
@@ -164,6 +184,27 @@ def test_root_package_exposes_only_the_research_facade():
     assert not hasattr(icapa.ResearchWorkspace, "open_workspace")
 
 
+def test_methodology_and_engine_subpackages_have_an_explicit_public_surface():
+    assert set(engines.__all__) == {
+        "EntropyExposureEngine",
+        "EntropyExposureMode",
+        "ExposureTarget",
+        "FactorTiltEngine",
+        "MinimumVarianceEngine",
+        "QuantileSelectionEngine",
+        "SelectionCriterion",
+        "SelectionScope",
+        "SelectionWeighting",
+        "TargetDirection",
+        "TiltScheme",
+    }
+    assert set(methodologies.__all__) == {
+        "FactorTiltMethodology",
+        "MinimumVarianceMethodology",
+        "QuantileSelectionMethodology",
+    }
+
+
 def test_setuptools_explicitly_packages_every_public_domain_subpackage():
     configuration = tomllib.loads(
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -174,24 +215,30 @@ def test_setuptools_explicitly_packages_every_public_domain_subpackage():
         for initializer in (PROJECT_ROOT / directory).rglob("__init__.py"):
             if "__pycache__" not in initializer.parts:
                 expected.add(
-                    "icapa." + ".".join(initializer.parent.relative_to(PROJECT_ROOT).parts)
+                    "icapa."
+                    + ".".join(
+                        initializer.parent.relative_to(PROJECT_ROOT).parts
+                    )
                 )
-    expected.difference_update(PRIVATE_PACKAGE_PREFIXES)
+    expected.difference_update(LOCAL_ONLY_PACKAGE_PREFIXES)
 
     assert configured == expected
-    assert not configured.intersection(PRIVATE_PACKAGE_PREFIXES)
+    assert not configured.intersection(LOCAL_ONLY_PACKAGE_PREFIXES)
 
 
-def test_build_and_source_manifest_exclude_private_implementations():
+def test_build_and_source_manifest_publish_methodologies_and_engines():
     setup_prefixes = set(
         _assigned_literal(PROJECT_ROOT / "setup.py", "_LOCAL_ONLY_PACKAGE_PREFIXES")
     )
-    assert setup_prefixes == PRIVATE_PACKAGE_PREFIXES
+    assert setup_prefixes == LOCAL_ONLY_PACKAGE_PREFIXES
 
     manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-    for package_name in PRIVATE_PACKAGE_PREFIXES:
-        relative_path = package_name.removeprefix("icapa.").replace(".", "/")
-        assert f"prune {relative_path}" in manifest
+    for relative_path in (
+        "portfolio_construction/engines",
+        "portfolio_construction/methodologies",
+    ):
+        assert f"recursive-include {relative_path} *.py" in manifest
+        assert f"recursive-exclude {relative_path} *" not in manifest
 
 
 def test_repository_guard_uses_the_refactored_data_source_paths():
@@ -218,17 +265,33 @@ def test_repository_guard_uses_the_refactored_data_source_paths():
         )
         for path in public_files
     )
+    public_implementations = set(
+        _assigned_literal(
+            PROJECT_ROOT / "scripts" / "repository_guard.py",
+            "PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES",
+        )
+    )
+    assert public_implementations == PUBLIC_IMPLEMENTATION_FILES
+    placeholder_directories = set(
+        _assigned_literal(
+            PROJECT_ROOT / "scripts" / "repository_guard.py",
+            "PLACEHOLDER_DIRECTORIES",
+        )
+    )
+    assert placeholder_directories == {
+        "portfolio_construction/rules/data_processing"
+    }
 
 
-def test_gitignore_keeps_private_code_and_unlisted_adapters_local():
+def test_gitignore_publishes_implementations_but_keeps_local_data_code():
     ignored = (
-        "portfolio_construction/engines/example_engine.py",
-        "portfolio_construction/methodologies/example_methodology.py",
         "portfolio_construction/rules/data_processing/example_rule.py",
         "data_sources/providers/example_local_adapter.py",
     )
     public = (
         "portfolio_construction/engines/.gitkeep",
+        "portfolio_construction/engines/example_engine.py",
+        "portfolio_construction/methodologies/example_methodology.py",
         "data_sources/providers/factset/adapter.py",
         "data_sources/providers/snowflake/adapter.py",
     )
@@ -279,6 +342,70 @@ def test_build_hook_removes_stale_package_output(tmp_path):
 
     assert not stale.exists()
     assert build_lib.joinpath("icapa", "analytics", "comparison", "engine.py").is_file()
-    for package_name in PRIVATE_PACKAGE_PREFIXES:
+    for package_name in LOCAL_ONLY_PACKAGE_PREFIXES:
         relative = package_name.removeprefix("icapa.").split(".")
         assert not build_lib.joinpath("icapa", *relative).exists()
+    public_package_files = {
+        "engines": {
+            "__init__.py",
+            "entropy_exposure_engine.py",
+            "factor_tilt_engine.py",
+            "minimum_variance_engine.py",
+            "quantile_selection_engine.py",
+        },
+        "methodologies": {
+            "__init__.py",
+            "factor_tilt_methodology.py",
+            "minimum_variance_methodology.py",
+            "quantile_selection_methodology.py",
+            "recipe_presets.py",
+        },
+    }
+    for package_name, expected_files in public_package_files.items():
+        package_path = build_lib / "icapa" / "portfolio_construction" / package_name
+        assert {
+            path.name for path in package_path.glob("*.py")
+        } == expected_files
+    imported = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            (
+                "from icapa.portfolio_construction.engines.entropy_exposure_engine "
+                "import EntropyExposureEngine; "
+                "from icapa.portfolio_construction.engines.factor_tilt_engine "
+                "import FactorTiltEngine; "
+                "from icapa.portfolio_construction.engines.minimum_variance_engine "
+                "import MinimumVarianceEngine; "
+                "from icapa.portfolio_construction.engines.quantile_selection_engine "
+                "import QuantileSelectionEngine; "
+                "from icapa.portfolio_construction.methodologies.factor_tilt_methodology "
+                "import FactorTiltMethodology; "
+                "from icapa.portfolio_construction.methodologies.minimum_variance_methodology "
+                "import MinimumVarianceMethodology; "
+                "from icapa.portfolio_construction.methodologies.quantile_selection_methodology "
+                "import QuantileSelectionMethodology; "
+                "assert EntropyExposureEngine and FactorTiltEngine; "
+                "assert MinimumVarianceEngine; "
+                "assert QuantileSelectionEngine; "
+                "assert FactorTiltMethodology("
+                "factor_tilts={'x': 1.0}, universe_id='u', "
+                "universe_provider_name='p', factor_provider_name='p'"
+                ").to_recipe(); "
+                "assert MinimumVarianceMethodology("
+                "universe_id='u', universe_provider_name='p', "
+                "returns_provider_name='p'"
+                ").to_recipe(); "
+                "assert QuantileSelectionMethodology("
+                "signal_weights={'x': 1.0}, universe_id='u', "
+                "universe_provider_name='p', signal_provider_name='p'"
+                ").to_recipe()"
+            ),
+        ),
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(build_lib)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert imported.returncode == 0

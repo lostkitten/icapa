@@ -119,9 +119,9 @@ workspace = ResearchWorkspace.open("research_index_20260410")
 baseline = workspace.run(spec)
 ```
 
-The provider and methodology objects in this example are deployment supplied.
-The public core contains no production credentials, SQL, schema, or private
-methodology implementation.
+The provider and methodology objects in this example may be deployment
+supplied. The public core includes its canonical provider-neutral
+methodologies, but contains no production credentials, SQL, or schema.
 
 ## Automatic identity and run manifests
 
@@ -365,7 +365,7 @@ Researchers have five extension levels:
 
 1. Compose reusable standard stages.
 2. Implement an arbitrary custom Python `IndexStage`.
-3. Expose a private composite stage while hiding its internal graph.
+3. Expose a composite stage behind a stable public contract.
 4. Use one monolithic custom stage that directly produces target weights.
 5. Wrap an `execute(DataContext)` methodology with
    `IndexRecipe.from_methodology(methodology)`.
@@ -378,7 +378,7 @@ optimizer.
 ### Previous-review state
 
 A stage can explicitly request previous target weights, membership, ranks, or
-private state through namespaced artifacts. When a stateful sequence starts in
+custom state through namespaced artifacts. When a stateful sequence starts in
 the middle, the caller must provide a valid previous state, replay earlier
 reviews, or resolve a cached seed. Missing required state fails explicitly; the
 requested start is never treated silently as the first historical review.
@@ -551,6 +551,9 @@ additive model layer provides:
 - `OptimizationModelSpec` for an inspectable objective and linear/nonlinear
   constraints;
 - squared-distance, linear, and minimum-variance objective specifications;
+- Entropy-Guided Multiplicative Update (EGMU) solvers for exact and elastic
+  minimum-relative-entropy exposure targets, plus KL/Bregman--Dykstra
+  projection across linear target, group, and instrument constraints;
 - reusable group, turnover, tracking-error, and general constraint builders;
 - `SolverRouter`, which checks declared capabilities and uses one explicitly
   selected backend without silent fallback;
@@ -564,6 +567,30 @@ additive model layer provides:
 models. They compile into the general linear/nonlinear contracts without
 changing a solver. Unsupported backend capabilities fail before solve; ICAPA
 does not rewrite the model silently.
+
+`EGMUNewtonSolver` solves exact exposure equalities in the
+exposure-dimensional dual, while `EGMUElasticSolver` explicitly trades target
+residual against relative entropy. `EGMUProjectionSolver` preserves the same
+multiplicative KL geometry for equality, interval, and one-sided linear
+constraints. `EGMUConstrainedElasticSolver` combines a soft exposure target
+set with hard group and instrument constraints. These solvers require a
+strictly positive prior on the active support; callers with zero benchmark
+weights must restrict the problem to the positive support or choose an
+explicit smoothing policy.
+
+The public **Entropy Exposure** construction wraps those solvers as
+`EntropyExposureEngine`, imported from
+`icapa.portfolio_construction.engines`. Callers supply a `DataContext` whose
+investable constituents already contain the benchmark weights and requested
+exposure fields. Hard mode enforces exposure, group, capacity, and weight
+constraints. Elastic mode softens only the exposure requests and continues to
+verify the structural constraints as hard bounds.
+
+The same public packages also expose `FactorTiltMethodology`,
+`MinimumVarianceMethodology`, and `QuantileSelectionMethodology` with their
+corresponding engines and configuration enums. Each methodology provides both
+direct `execute(DataContext)` execution and a provider-aware `to_recipe()`
+adapter.
 
 Minimum-variance research uses `ReturnWindowSpec` with any public
 `CovarianceEstimator`:
@@ -690,16 +717,17 @@ lower-level contracts:
 - existing `execute(DataContext)` methodologies through direct use or
   `IndexRecipe.from_methodology`.
 
-`ResearchWorkspace` composes these interfaces. A private methodology may
-remain opaque as long as it emits the canonical target-weight contract.
+`ResearchWorkspace` composes these interfaces. A custom methodology may remain
+opaque to the workflow as long as it emits the canonical target-weight
+contract.
 
 ## Public extension boundary
 
 The public package contains provider contracts, recipes, optimization
-interfaces, workspaces, simulation, analytics, comparison, and reporting.
-Private methodology and engine implementations are supplied by a deployment
-outside the public repository. They can remain opaque while still emitting
-canonical target weights and safe diagnostics.
+interfaces, all repository methodology and engine implementations, workspaces,
+simulation, analytics, comparison, and reporting. Deployments may add external
+custom methodologies, but the canonical implementations are included in the
+public source and wheel distributions.
 
 For data fields, date semantics, provider capabilities, and adapter design, see
 [the data-loading guide](data_loading_guide.md). For reproducible performance

@@ -83,6 +83,8 @@ packages = [
     "icapa.data_sources.services",
     "icapa.data_sources.universes",
     "icapa.portfolio_construction",
+    "icapa.portfolio_construction.engines",
+    "icapa.portfolio_construction.methodologies",
     "icapa.portfolio_construction.optimization",
     "icapa.portfolio_construction.recipes",
     "icapa.portfolio_construction.rules",

@@ -92,11 +92,7 @@ logs/
 !/data_sources/universes/__init__.py
 !/data_sources/universes/mapping.py
 
-# Local-only portfolio-construction implementations
-/portfolio_construction/methodologies/*
-!/portfolio_construction/methodologies/.gitkeep
-/portfolio_construction/engines/*
-!/portfolio_construction/engines/.gitkeep
+# Local-only processing extensions and development demos
 /portfolio_construction/rules/data_processing/*
 !/portfolio_construction/rules/data_processing/.gitkeep
 /demo.py

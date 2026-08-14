@@ -4,7 +4,7 @@
 
 The independent scale suite measures the public research architecture without
 slowing the normal correctness tests. It uses deterministic generated data and
-does not require a database, credentials, or private methodology.
+does not require a database, credentials, or deployment-specific methodology.
 
 The suite is opt-in. A normal `pytest -q` run collects scale tests but skips
 them.

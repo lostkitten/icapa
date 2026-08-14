@@ -157,8 +157,8 @@ deterministically in Excel and remain complete in Parquet.
 - Add a provider under `data_sources/providers` and implement only the
   capabilities it supplies.
 - Add a reusable construction operation to the matching rule category.
-- Add a private methodology under `portfolio_construction/methodologies`.
-- Add a private reusable calculation engine under
+- Add a methodology under `portfolio_construction/methodologies`.
+- Add a reusable calculation engine under
   `portfolio_construction/engines`.
 - Add a recipe stage under `portfolio_construction/recipes`.
 - Add an optimizer backend under `portfolio_construction/optimization`.
@@ -166,9 +166,9 @@ deterministically in Excel and remain complete in Parquet.
 - Add a report section through a `reporting` builder rather than calculating
   it in the renderer.
 
-Private methodology, engine, and selected processing implementations remain
-available in development checkouts but are excluded from the public source
-distribution and wheel.
+The repository and distributions include all methodology and engine modules.
+Deployment-specific provider adapters and selected processing extensions can
+still be supplied independently.
 
 ## Public entry point
 

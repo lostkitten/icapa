@@ -82,20 +82,26 @@ Optional packages are imported only when their feature is requested. Missing
 optional dependencies produce an actionable error and never change the chosen
 calculation silently.
 
-## Private construction implementations
+## Public construction methodologies
 
-Public distributions include construction contracts and extension interfaces,
-but do not distribute deployment-specific methodology, engine, or selected
-processing implementations. Development checkouts can supply private modules
-under:
+Public distributions include the provider-neutral Factor Tilt, Minimum
+Variance, and Quantile Selection methodologies together with their reusable
+engines. The public engine package also includes `EntropyExposureEngine`,
+backed by the EGMU solvers. Import these APIs from
+`icapa.portfolio_construction.methodologies` and
+`icapa.portfolio_construction.engines`.
+
+All methodology and engine modules in these packages ship in both source and
+wheel distributions:
 
 ```text
 portfolio_construction/methodologies/
 portfolio_construction/engines/
-portfolio_construction/rules/data_processing/
 ```
 
-The build and repository guards enforce this boundary.
+Deployment-specific provider adapters and selected processing extensions may
+still be supplied outside the public package; they are separate from the
+public methodology API.
 
 ## Data and reports
 

@@ -16,8 +16,6 @@ _LOCAL_ONLY_MODULES = frozenset(
     }
 )
 _LOCAL_ONLY_PACKAGE_PREFIXES = (
-    "icapa.portfolio_construction.engines",
-    "icapa.portfolio_construction.methodologies",
     "icapa.portfolio_construction.rules.data_processing",
 )
 
@@ -43,6 +41,14 @@ class PublicBuildPy(build_py):
 
     def find_all_modules(self):
         modules = super().find_all_modules()
+        return [
+            item
+            for item in modules
+            if _public_module_name(item[0], item[1])
+        ]
+
+    def find_package_modules(self, package, package_dir):
+        modules = super().find_package_modules(package, package_dir)
         return [
             item
             for item in modules

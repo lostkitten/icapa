@@ -18,12 +18,19 @@ from pathlib import PurePosixPath
 
 ZERO_OID = "0" * 40
 PLACEHOLDER_DIRECTORIES = (
-    "portfolio_construction/methodologies",
-    "portfolio_construction/engines",
     "portfolio_construction/rules/data_processing",
 )
 ALLOWED_PLACEHOLDERS = {
     f"{directory}/.gitkeep".casefold() for directory in PLACEHOLDER_DIRECTORIES
+}
+PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES = {
+    "portfolio_construction/engines/entropy_exposure_engine.py",
+    "portfolio_construction/engines/factor_tilt_engine.py",
+    "portfolio_construction/engines/minimum_variance_engine.py",
+    "portfolio_construction/engines/quantile_selection_engine.py",
+    "portfolio_construction/methodologies/factor_tilt_methodology.py",
+    "portfolio_construction/methodologies/minimum_variance_methodology.py",
+    "portfolio_construction/methodologies/quantile_selection_methodology.py",
 }
 PRIVATE_IMPLEMENTATION_FILES = {
     "demo.py",
@@ -115,14 +122,8 @@ RESTRICTED_IDENTIFIER_DIGESTS_BY_LENGTH = {
         "2c0ecc16e95e4432ba6f695b10a4ecd2fb2874b1c462348fca61a76f1bf8b0f5",
         "c32c0549854fcdd3cd7de635d342abdb032a41e460d5d3d466862db7b6a2af6d",
     },
-    21: {
-        "bfecd7e4b868856bfeac83fc24ae2d304eb4268ed2682e528f6a633b69d4e1fe",
-    },
     25: {
         "1fa1387cf6353a2372c1a46063cea4778ed8041540ac63479fce88fc862313c8",
-    },
-    26: {
-        "fd5fb61f546cdc90cebc5921cd459107a9784e8418d61ae3241b9cd0a724c677",
     },
 }
 HAN_PATTERN = re.compile(
@@ -253,7 +254,14 @@ def _validate_path(
 
     for directory in PLACEHOLDER_DIRECTORIES:
         prefix = f"{directory.casefold()}/"
-        if folded.startswith(prefix) and folded not in ALLOWED_PLACEHOLDERS:
+        public_implementations = {
+            item.casefold() for item in PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES
+        }
+        if (
+            folded.startswith(prefix)
+            and folded not in ALLOWED_PLACEHOLDERS
+            and folded not in public_implementations
+        ):
             errors.append(f"protected implementation path is tracked: {entry.path}")
 
     if folded in {item.casefold() for item in PRIVATE_IMPLEMENTATION_FILES}:
@@ -261,6 +269,10 @@ def _validate_path(
     if (
         folded.startswith("portfolio_construction/")
         and path.name.casefold().endswith(("_methodology.py", "_engine.py"))
+        and folded
+        not in {
+            item.casefold() for item in PUBLIC_PORTFOLIO_IMPLEMENTATION_FILES
+        }
     ):
         errors.append(f"implementation-shaped source file is tracked: {entry.path}")
     if parts & GENERATED_PATH_PARTS:

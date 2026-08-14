@@ -214,13 +214,12 @@ recipe or compatible weight producer.
 ## Public extension boundary
 
 `portfolio_construction` contains `IndexRecipe`, generic optimization
-contracts, objective and constraint builders, and solver interfaces. The
-private extension folders
+contracts, objective and constraint builders, solver interfaces, and the full
+set of provider-neutral methodologies and engines under
 `portfolio_construction/methodologies/` and
-`portfolio_construction/engines/`, together with selected implementations
-under `portfolio_construction/rules/data_processing/`, intentionally contain
-only `.gitkeep` in the public repository. Private recipe stages and compatible
-weight producers are supplied outside the public core.
+`portfolio_construction/engines/`. Selected deployment-specific processing
+rules and compatible weight producers can still be supplied outside the
+public core.
 
 The named-workspace, simulation, analytics, and reporting workflow is described
 in [the index research workflow](index_research_workflow.md).
